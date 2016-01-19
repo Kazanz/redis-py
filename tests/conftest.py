@@ -44,3 +44,8 @@ def r(request, **kwargs):
 @pytest.fixture()
 def sr(request, **kwargs):
     return _get_client(redis.StrictRedis, request, **kwargs)
+
+
+@pytest.fixture()
+def nsr(request, **kwargs):
+    return _get_client(redis.Redis, request, namespace='namespace', **kwargs)

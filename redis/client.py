@@ -23,6 +23,7 @@ from redis.exceptions import (
     TimeoutError,
     WatchError,
 )
+from redis.namespace import NamespaceWrapper
 
 SYM_EMPTY = b('')
 
@@ -364,6 +365,8 @@ class StrictRedis(object):
             'ZSCAN': parse_zscan
         }
     )
+
+    namespace = None
 
     @classmethod
     def from_url(cls, url, db=None, **kwargs):
@@ -1988,6 +1991,23 @@ class Redis(StrictRedis):
             'PTTL': lambda r: r >= 0 and r or None,
         }
     )
+
+    def __init__(self, *args, **kwargs):
+        self.namespace = kwargs.pop('namespace', None)
+        return super(Redis, self).__init__(*args, **kwargs)
+
+    def execute_command(self, *args, **options):
+        if self.namespace:
+            self.ns = NamespaceWrapper(self.namespace, args)
+            args = self.ns.format_args()
+        return super(Redis, self).execute_command(*args, **options)
+
+    def parse_response(self, connection, command_name, **options):
+        parent = super(Redis, self)
+        response = parent.parse_response(connection, command_name, **options)
+        if self.namespace:
+            return self.ns.format_response(response)
+        return response
 
     def pipeline(self, transaction=True, shard_hint=None):
         """

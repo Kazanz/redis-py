@@ -658,6 +658,20 @@ that return Python iterators for convenience: `scan_iter`, `hscan_iter`,
     B 2
     C 3
 
+Namespacing
+^^^^^^^^^^^
+
+.. code-block:: pycon
+
+    >>> import redis
+    >>> r = redis.StrictRedis(host='localhost', port=6379, db=0, namespace="ns:")
+    >>> # Sets key "ns:foo".
+    >>> r.set('foo', 'bar')
+    True
+    >>> # Gets key "ns:foo".
+    >>> r.get('foo')
+    'bar'
+
 Author
 ^^^^^^
 
