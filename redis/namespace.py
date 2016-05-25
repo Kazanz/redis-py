@@ -1,277 +1,96 @@
-class NamespaceWrapper():
-    FORMAT_METHODS = {
-        "every other": lambda arg_start, l, i: arg_start % 2 == i % 2,
-        "ignore last": lambda arg_start, l, i: l - 1 != i,
-    }
-    RESP_METHODS = {
-        "mapped_tuple": lambda res: [
-            tuple(x) if isinstance(x, list) else x for x in res
-        ],
-        "tuple": lambda res: tuple(res),
-        "recursive": lambda res: NamespaceWrapper.recursive(res)
-    }
+def cmd_execution_wrapper(f, cmd):
+    """
+    Wraps redis class' `execute_command` so that it can be decorated by
+    namepace_format.  This is necesary when the func calling `execute_commad`
+    has kwargs that are turned into regular args inside of the method before
+    being passed to `execute_command`.
+    """
+    def execute_command(self, *args, **kwargs):
+        args = (cmd,) + args
+        return f(*args, **kwargs)
+    return execute_command
 
-    def __init__(self, namespace, args):
-        self.namespace = namespace
-        self.args = list(args)
-        self.command_name = args[0]
-        self.cmd = CMDS.get(self.command_name, {})
-        self.l = len(args) if self.cmd.get('multi', False) else 2
-        self.arg_start = self.cmd.get('arg_start', 1)
-        self.method = self.FORMAT_METHODS.get(self.cmd.get('method'))
-        self.skip = self.cmd.get('skip', [])
 
-    def format_args(self):
-        """Appends namespace to applicaple args before sending to redis."""
-        if self.cmd.get('format_args', True) and len(self.args) > 1:
-            for i in range(self.arg_start, self.l):
-                arg = self.args[i]
-                if self.should_format(i, arg):
-                    self.args[i] = self.format_arg(arg)
-        print(self.args)
-        return self.args
+def namespace_format(arg_format=True, resp_format=False, multi=False,
+                     arg_start=0, method=None, skip=[], resp_keys=[],
+                     lex=False):
+    """Decorator to format args and responses of redis funcs with namespaces.
 
-    def should_format(self, i, arg):
-        return all([
-            not self.arg_reserved(arg),
-            self.can_format(arg),
-            self.valid_method(i),
-            i not in self.skip,
-        ])
-
-    def can_format(self, arg):
-        return isinstance(arg, (str, bytes))
-
-    def valid_method(self, i):
-        if self.method:
-            return self.method(self.arg_start, self.l, i)
-        return True
-
-    def arg_reserved(self, arg):
-        if arg in ['-', '+', "*", "#", "sorted_values"]:
-            return True
-        if self.cmd_contains("SCAN") and (arg == "MATCH" or arg == '0'):
-            return True
-        if self.cmd_contains('STORE') and arg in ['AGGREGATE', 'MAX', 'MIN']:
-            return True
-        return False
-
-    def cmd_contains(self, x):
-        return self.command_name.find(x) > -1
-
-    def format_arg(self, arg):
-        if not isinstance(arg, str):
-            arg = arg.decode()
-        if self.command_name.find('LEX') > -1:
-            return self.format_lex_arg(arg)
-        return (self.namespace + arg).encode()
-
-    def format_lex_arg(self, arg):
-        for v in ['[', '(']:
-            if arg.startswith(v):
-                return arg.replace(v, v + self.namespace)
-        return (self.namespace + arg).encode()
-
-    def format_response(self, response):
-        """Removes namespace from responses."""
-        print(response)
-        if self.cmd.get('format_response', True):
-            return self.clean_response(self.remove_namespace(response))
-        return response
-
-    def remove_namespace(self, response, keys=[]):
-        if isinstance(response, dict) and self.command_name == "SLOWLOG GET":
-            response['command'] = self.remove_namespace(response['command'])
-        if isinstance(response, (tuple, list)):
-            response = [self.remove_namespace(x) for x in response]
-        try:
-            if isinstance(response, str):
-                return response.replace(self.namespace, '', 1)
-            else:
-                response = response.decode().replace(self.namespace, '', 1)
-                return response.encode()
-        except (AttributeError, TypeError, UnicodeDecodeError):
+    :param arg_format: If True add namespace to args passed to the func.
+    :param resp_format: If True remove namespace from response values of func.
+    :param multi: Should be True if function takes an arbitrary # of variables.
+    :param arg_start: Index of where the arguments passed to redis start.
+    :param method: Func called on arg and arg index that returns True when the
+        arg is a value that should receive the namespace.
+    :param skip: List of indexes of args to not append namespace to.
+    :param resp_keys: List of keys in the response where the values need
+        namespace removal.
+    :param lex: If True any arg that starts with ( or [ will have the namespace
+        appended after the initial character.
+        ex: "(arg)" will be "(namepace:arg)" not "namespace:(arg)"
+    """
+    def decorator(f):
+        def wrapper(self, *args, **kwargs):
+            if self.namespace:
+                args = list(args or f.__defaults__)
+                if arg_format and args:
+                    args = format_args(self.namespace, args, multi, arg_start,
+                                       method, skip, lex)
+            response = f(self, *args, **kwargs)
+            if self.namespace and resp_format:
+                response = remove_namespace(self.namespace, response, resp_keys)
             return response
-
-    def clean_response(self, response):
-        tuple_method = self.RESP_METHODS.get(self.cmd.get('response_method'))
-        if tuple_method and hasattr(response, '__iter__'):
-            return tuple_method(response)
-        return response
-
-    @staticmethod
-    def recursive(l):
-        if isinstance(l, (list, tuple)):
-            return tuple(map(NamespaceWrapper.recursive, l))
-        return l
+        return wrapper
+    return decorator
 
 
-CMDS = {
-    'BITOP': {
-        "multi": True,
-        "arg_start": 2,
-    },
-    'BLPOP': {
-        "multi": True,
-        "method": "ignore last",
-        "response_method": "tuple",
-    },
-    'BRPOP': {
-        "multi": True,
-        "method": "ignore last",
-        "response_method": "tuple",
-    },
-    'BRPOPLPUSH': {
-        "multi": True,
-        "method": "ignore last",
-    },
-    'CLIENT GETNAME': {
-        'format_args': False,
-    },
-    'CONFIG GET': {
-        'format_args': False,
-    },
-    'CONFIG SET': {
-        'format_args': False,
-    },
-    'DEL': {
-        'multi': True,
-        'format_response': False,
-    },
-    'FLUSHDB': {
-        'format_args': False,
-        'format_response': False,
-    },
-    'INFO': {
-        'format_args': False,
-    },
-    'MGET': {
-        "multi": True,
-    },
-    'MSET': {
-        "multi": True,
-        "method": "every other",
-    },
-    'MSETNX': {
-        "multi": True,
-        "method": "every other",
-    },
-    'OBJECT': {
-        'multi': True,
-        'format_response': False,
-        'arg_start': 2,
-    },
-    'PFCOUNT': {
-        "multi": True,
-    },
-    'PFMERGE': {
-        "multi": True,
-    },
-    'RENAME': {
-        "multi": True,
-        "format_response": False,
-    },
-    'RENAMENX': {
-        "multi": True,
-        "format_response": False,
-    },
-    'RPOPLPUSH': {
-        "multi": True,
-    },
-    'SCAN': {
-        "multi": True,
-        "skip": [1],
-        "response_method": "recursive",
-    },
-    'SDIFF': {
-        "multi": True,
-    },
-    'SDIFFSTORE': {
-        "multi": True,
-    },
-    'SINTER': {
-        'multi': True,
-    },
-    'SINTERSTORE': {
-        "multi": True,
-    },
-    'SLOWLOG GET': {
-        "format_args": False,
-        "resp_keys": ["command"],
-    },
-    'SMOVE': {
-        "multi": True,
-        "method": "ignore last",
-    },
-    'SORT': {
-        'multi': True,
-        "response_method": "mapped_tuple",
-    },
-    'SUNION': {
-        'multi': True,
-    },
-    'SUNIONSTORE': {
-        "multi": True,
-    },
-    'ZADD': {
-        "multi": True,
-        "method": "every other",
-    },
-    'ZINCRBY': {
-        "multi": True,
-    },
-    'ZINTERSTORE': {
-        "multi": True,
-        "skip": [2],
-    },
-    'ZLEXCOUNT': {
-        "multi": True,
-    },
-    'ZRANGE': {
-        "response_method": "mapped_tuple",
-    },
-    'ZRANGEBYLEX': {
-        "multi": True,
-    },
-    'ZRANGEBYSCORE': {
-        "response_method": "mapped_tuple",
-    },
-    'ZRANK': {
-        "multi": True,
-    },
-    'ZREM': {
-        "multi": True,
-    },
-    'ZREMRANGEBYLEX': {
-        "multi": True,
-    },
-    'ZREMRANGEBYRANK': {
-        "multi": True,
-    },
-    'ZREMRANGEBYSCORE': {
-        "multi": True,
-    },
-    'ZREVRANGE': {
-        "response_method": "mapped_tuple",
-    },
-    'ZREVRANGEBYLEX': {
-        "multi": True,
-    },
-    'ZREVRANGEBYSCORE': {
-        "response_method": "mapped_tuple",
-    },
-    'ZREVRANK': {
-        "multi": True,
-    },
-    'ZSCAN': {
-        "multi": True,
-        "response_method": "recursive",
-    },
-    'ZSCORE': {
-        "multi": True,
-    },
-    'ZUNIONSTORE': {
-        "multi": True,
-        "skip": [2],
-    },
-}
+def format_args(namespace, args, multi=False, arg_start=0, method=None, skip=[],
+                lex=False):
+    """Append namespace to applicaple args before returning to send to redis."""
+    l = len(args) if multi else 1
+    for i in range(arg_start, l):
+        arg = args[i]
+        if i in skip:
+            continue
+        elif isinstance(arg, (list, tuple)):
+            args[i] = format_args(namespace, arg, multi=True, lex=lex)
+        elif not isinstance(arg, (str, bytes)):
+            continue
+        elif method and not method(arg_start, l, i):
+            continue
+        else:
+            args[i] = format_arg(namespace, arg, lex)
+    return args
+
+
+def format_arg(namespace, arg, lex):
+    """Appends the namespace to the arg."""
+    if lex and arg[0] in ('[', '('):
+        return arg[0] + namespace + arg[1:]
+    try:
+        return namespace + arg
+    except:
+        return str.encode(namespace) + arg
+
+
+def remove_namespace(namespace, response, resp_keys=[]):
+    """Removes any namespace from a redis response."""
+    if isinstance(namespace, str):
+        namespace = str.encode(namespace)
+    for key in resp_keys:
+        response[key] = remove_namespace(namespace, response[key])
+    if isinstance(response, (int, float, bool)):
+        pass
+    elif isinstance(response, bytes):
+        response = response.replace(namespace, b'', 1)
+    elif isinstance(response, (tuple, list)):
+        response = tuple([remove_namespace(namespace, x) for x in response])
+    return response
+
+
+def every_other(arg_start, l, i):
+    return arg_start % 2 == i % 2
+
+
+def ignore_last(arg_start, l, i):
+    return l - 1 != i

@@ -672,6 +672,33 @@ Namespacing
     >>> r.get('foo')
     'bar'
 
+Important: Any application code that accesses data structures that store
+key names will not return keys with the namespace stripped.  For example:
+
+.. code-block:: pycon
+
+    r = redis.StrictRedis(namespace="ns:", ...)
+    for key in r.blpop():
+        data = r.get(key)
+        # do something with data
+        # if data is a key it will not have the namespace removed
+
+    ### OR
+
+    for key in r.keys('myapp:*'):
+       data = r.get(key)
+
+
+To strip the namespace from the keys manually you can use the `remove_namespace`
+function.
+
+.. code-block:: pycon
+
+    r = redis.StrictRedis(namespace="ns:", ...)
+    for key in r.keys('myapp:*'):
+       data = r.remove_namespace(r.get(key))
+
+
 Author
 ^^^^^^
 
@@ -684,4 +711,3 @@ Special thanks to:
   which some of the socket code is still used.
 * Alexander Solovyov for ideas on the generic response callback system.
 * Paul Hubbard for initial packaging support.
-

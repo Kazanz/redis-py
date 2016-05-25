@@ -23,7 +23,13 @@ from redis.exceptions import (
     TimeoutError,
     WatchError,
 )
-from redis.namespace import NamespaceWrapper
+from redis.namespace import (
+    cmd_execution_wrapper,
+    every_other,
+    ignore_last,
+    namespace_format,
+    remove_namespace,
+)
 
 SYM_EMPTY = b('')
 
@@ -366,8 +372,6 @@ class StrictRedis(object):
         }
     )
 
-    namespace = None
-
     @classmethod
     def from_url(cls, url, db=None, **kwargs):
         """
@@ -404,7 +408,7 @@ class StrictRedis(object):
                  decode_responses=False, retry_on_timeout=False,
                  ssl=False, ssl_keyfile=None, ssl_certfile=None,
                  ssl_cert_reqs=None, ssl_ca_certs=None,
-                 max_connections=None):
+                 max_connections=None, namespace=None):
         if not connection_pool:
             if charset is not None:
                 warnings.warn(DeprecationWarning(
@@ -454,6 +458,7 @@ class StrictRedis(object):
         self._use_lua_lock = None
 
         self.response_callbacks = self.__class__.RESPONSE_CALLBACKS.copy()
+        self.namespace = namespace
 
     def __repr__(self):
         return "%s<%s>" % (type(self).__name__, repr(self.connection_pool))
@@ -462,7 +467,7 @@ class StrictRedis(object):
         "Set a custom Response Callback"
         self.response_callbacks[command] = callback
 
-    def pipeline(self, transaction=True, shard_hint=None):
+    def pipeline(self, transaction=True, shard_hint=None, namespace=None):
         """
         Return a new pipeline object that can queue multiple commands for
         later execution. ``transaction`` indicates whether all commands
@@ -474,7 +479,8 @@ class StrictRedis(object):
             self.connection_pool,
             self.response_callbacks,
             transaction,
-            shard_hint)
+            shard_hint,
+            namespace or self.namespace)
 
     def transaction(self, func, *watches, **kwargs):
         """
@@ -563,7 +569,14 @@ class StrictRedis(object):
         subscribe to channels and listen for messages that get published to
         them.
         """
+        if 'namespace' not in kwargs and self.namespace:
+            kwargs['namespace'] = self.namespace
         return PubSub(self.connection_pool, **kwargs)
+
+    def remove_namespace(self, key):
+        if self.namespace:
+            return remove_namespace(self.namespace, key)
+        return key
 
     # COMMAND EXECUTION AND PROTOCOL PARSING
     def execute_command(self, *args, **options):
@@ -638,6 +651,7 @@ class StrictRedis(object):
         "Returns the number of keys in the current database"
         return self.execute_command('DBSIZE')
 
+    @namespace_format()
     def debug_object(self, key):
         "Returns version specific meta information about a given key"
         return self.execute_command('DEBUG OBJECT', key)
@@ -676,6 +690,7 @@ class StrictRedis(object):
         """
         return self.execute_command('LASTSAVE')
 
+    @namespace_format(multi=True, arg_start=1)
     def object(self, infotype, key):
         "Return the encoding, idletime, or refcount about the key"
         return self.execute_command('OBJECT', infotype, key, infotype=infotype)
@@ -783,6 +798,7 @@ class StrictRedis(object):
         return self.execute_command('WAIT', num_replicas, timeout)
 
     # BASIC KEY COMMANDS
+    @namespace_format()
     def append(self, key, value):
         """
         Appends the string ``value`` to the value at ``key``. If ``key``
@@ -791,6 +807,7 @@ class StrictRedis(object):
         """
         return self.execute_command('APPEND', key, value)
 
+    @namespace_format()
     def bitcount(self, key, start=None, end=None):
         """
         Returns the count of set bits in the value of ``key``.  Optional
@@ -805,6 +822,7 @@ class StrictRedis(object):
             raise RedisError("Both start and end must be specified")
         return self.execute_command('BITCOUNT', *params)
 
+    @namespace_format(multi=True, arg_start=1)
     def bitop(self, operation, dest, *keys):
         """
         Perform a bitwise operation using ``operation`` between ``keys`` and
@@ -812,6 +830,7 @@ class StrictRedis(object):
         """
         return self.execute_command('BITOP', operation, dest, *keys)
 
+    @namespace_format()
     def bitpos(self, key, bit, start=None, end=None):
         """
         Return the position of the first bit set to 1 or 0 in a string.
@@ -832,6 +851,7 @@ class StrictRedis(object):
                              "when end is specified")
         return self.execute_command('BITPOS', *params)
 
+    @namespace_format()
     def decr(self, name, amount=1):
         """
         Decrements the value of ``key`` by ``amount``.  If no key exists,
@@ -839,6 +859,7 @@ class StrictRedis(object):
         """
         return self.execute_command('DECRBY', name, amount)
 
+    @namespace_format(multi=True)
     def delete(self, *names):
         "Delete one or more keys specified by ``names``"
         return self.execute_command('DEL', *names)
@@ -846,6 +867,7 @@ class StrictRedis(object):
     def __delitem__(self, name):
         self.delete(name)
 
+    @namespace_format()
     def dump(self, name):
         """
         Return a serialized version of the value stored at the specified key.
@@ -853,11 +875,13 @@ class StrictRedis(object):
         """
         return self.execute_command('DUMP', name)
 
+    @namespace_format()
     def exists(self, name):
         "Returns a boolean indicating whether key ``name`` exists"
         return self.execute_command('EXISTS', name)
     __contains__ = exists
 
+    @namespace_format()
     def expire(self, name, time):
         """
         Set an expire flag on key ``name`` for ``time`` seconds. ``time``
@@ -867,6 +891,7 @@ class StrictRedis(object):
             time = time.seconds + time.days * 24 * 3600
         return self.execute_command('EXPIRE', name, time)
 
+    @namespace_format()
     def expireat(self, name, when):
         """
         Set an expire flag on key ``name``. ``when`` can be represented
@@ -876,6 +901,7 @@ class StrictRedis(object):
             when = int(mod_time.mktime(when.timetuple()))
         return self.execute_command('EXPIREAT', name, when)
 
+    @namespace_format()
     def get(self, name):
         """
         Return the value at key ``name``, or None if the key doesn't exist
@@ -892,10 +918,12 @@ class StrictRedis(object):
             return value
         raise KeyError(name)
 
+    @namespace_format()
     def getbit(self, name, offset):
         "Returns a boolean indicating the value of ``offset`` in ``name``"
         return self.execute_command('GETBIT', name, offset)
 
+    @namespace_format()
     def getrange(self, key, start, end):
         """
         Returns the substring of the string value stored at ``key``,
@@ -903,6 +931,7 @@ class StrictRedis(object):
         """
         return self.execute_command('GETRANGE', key, start, end)
 
+    @namespace_format()
     def getset(self, name, value):
         """
         Sets the value at key ``name`` to ``value``
@@ -910,6 +939,7 @@ class StrictRedis(object):
         """
         return self.execute_command('GETSET', name, value)
 
+    @namespace_format()
     def incr(self, name, amount=1):
         """
         Increments the value of ``key`` by ``amount``.  If no key exists,
@@ -917,6 +947,7 @@ class StrictRedis(object):
         """
         return self.execute_command('INCRBY', name, amount)
 
+    @namespace_format()
     def incrby(self, name, amount=1):
         """
         Increments the value of ``key`` by ``amount``.  If no key exists,
@@ -927,6 +958,7 @@ class StrictRedis(object):
         # as INCRBY redis command.
         return self.incr(name, amount)
 
+    @namespace_format()
     def incrbyfloat(self, name, amount=1.0):
         """
         Increments the value at key ``name`` by floating ``amount``.
@@ -934,10 +966,12 @@ class StrictRedis(object):
         """
         return self.execute_command('INCRBYFLOAT', name, amount)
 
+    @namespace_format(resp_format=True)
     def keys(self, pattern='*'):
         "Returns a list of keys matching ``pattern``"
         return self.execute_command('KEYS', pattern)
 
+    @namespace_format(multi=True)
     def mget(self, keys, *args):
         """
         Returns a list of values ordered identically to ``keys``
@@ -957,7 +991,10 @@ class StrictRedis(object):
         items = []
         for pair in iteritems(kwargs):
             items.extend(pair)
-        return self.execute_command('MSET', *items)
+
+        decorator = namespace_format(multi=True, method=every_other)
+        f = decorator(cmd_execution_wrapper(self.execute_command, 'MSET'))
+        return f(self, *items)
 
     def msetnx(self, *args, **kwargs):
         """
@@ -973,16 +1010,23 @@ class StrictRedis(object):
         items = []
         for pair in iteritems(kwargs):
             items.extend(pair)
-        return self.execute_command('MSETNX', *items)
 
+        decorator = namespace_format(multi=True, method=every_other)
+        f = decorator(cmd_execution_wrapper(self.execute_command, 'MSETNX'))
+        return f(self, *items)
+
+
+    @namespace_format()
     def move(self, name, db):
         "Moves the key ``name`` to a different Redis database ``db``"
         return self.execute_command('MOVE', name, db)
 
+    @namespace_format()
     def persist(self, name):
         "Removes an expiration on ``name``"
         return self.execute_command('PERSIST', name)
 
+    @namespace_format()
     def pexpire(self, name, time):
         """
         Set an expire flag on key ``name`` for ``time`` milliseconds.
@@ -994,6 +1038,7 @@ class StrictRedis(object):
             time = (time.seconds + time.days * 24 * 3600) * 1000 + ms
         return self.execute_command('PEXPIRE', name, time)
 
+    @namespace_format()
     def pexpireat(self, name, when):
         """
         Set an expire flag on key ``name``. ``when`` can be represented
@@ -1005,6 +1050,7 @@ class StrictRedis(object):
             when = int(mod_time.mktime(when.timetuple())) * 1000 + ms
         return self.execute_command('PEXPIREAT', name, when)
 
+    @namespace_format()
     def psetex(self, name, time_ms, value):
         """
         Set the value of key ``name`` to ``value`` that expires in ``time_ms``
@@ -1016,24 +1062,34 @@ class StrictRedis(object):
             time_ms = (time_ms.seconds + time_ms.days * 24 * 3600) * 1000 + ms
         return self.execute_command('PSETEX', name, time_ms, value)
 
+    @namespace_format()
     def pttl(self, name):
         "Returns the number of milliseconds until the key ``name`` will expire"
         return self.execute_command('PTTL', name)
 
     def randomkey(self):
-        "Returns the name of a random key"
-        return self.execute_command('RANDOMKEY')
+        """
+        Returns the name of a random key.  Will return only namespaced keys
+        if namespace is provided on class.
+        """
+        key = self.execute_command('RANDOMKEY')
+        if self.namespace and not key.startswith(self.namespace):
+            return self.randomkey()
+        return key
 
+    @namespace_format(multi=True)
     def rename(self, src, dst):
         """
         Rename key ``src`` to ``dst``
         """
         return self.execute_command('RENAME', src, dst)
 
+    @namespace_format(multi=True)
     def renamenx(self, src, dst):
         "Rename key ``src`` to ``dst`` if ``dst`` doesn't already exist"
         return self.execute_command('RENAMENX', src, dst)
 
+    @namespace_format()
     def restore(self, name, ttl, value):
         """
         Create a key using the provided serialized value, previously obtained
@@ -1041,6 +1097,7 @@ class StrictRedis(object):
         """
         return self.execute_command('RESTORE', name, ttl, value)
 
+    @namespace_format()
     def set(self, name, value, ex=None, px=None, nx=False, xx=False):
         """
         Set the value at key ``name`` to ``value``
@@ -1077,6 +1134,7 @@ class StrictRedis(object):
     def __setitem__(self, name, value):
         self.set(name, value)
 
+    @namespace_format()
     def setbit(self, name, offset, value):
         """
         Flag the ``offset`` in ``name`` as ``value``. Returns a boolean
@@ -1085,6 +1143,7 @@ class StrictRedis(object):
         value = value and 1 or 0
         return self.execute_command('SETBIT', name, offset, value)
 
+    @namespace_format()
     def setex(self, name, time, value):
         """
         Set the value of key ``name`` to ``value`` that expires in ``time``
@@ -1095,10 +1154,12 @@ class StrictRedis(object):
             time = time.seconds + time.days * 24 * 3600
         return self.execute_command('SETEX', name, time, value)
 
+    @namespace_format()
     def setnx(self, name, value):
         "Set the value of key ``name`` to ``value`` if key doesn't exist"
         return self.execute_command('SETNX', name, value)
 
+    @namespace_format()
     def setrange(self, name, offset, value):
         """
         Overwrite bytes in the value of ``name`` starting at ``offset`` with
@@ -1112,10 +1173,12 @@ class StrictRedis(object):
         """
         return self.execute_command('SETRANGE', name, offset, value)
 
+    @namespace_format()
     def strlen(self, name):
         "Return the number of bytes stored in the value of ``name``"
         return self.execute_command('STRLEN', name)
 
+    @namespace_format()
     def substr(self, name, start, end=-1):
         """
         Return a substring of the string at key ``name``. ``start`` and ``end``
@@ -1123,10 +1186,12 @@ class StrictRedis(object):
         """
         return self.execute_command('SUBSTR', name, start, end)
 
+    @namespace_format()
     def ttl(self, name):
         "Returns the number of seconds until the key ``name`` will expire"
         return self.execute_command('TTL', name)
 
+    @namespace_format()
     def type(self, name):
         "Returns the type of key ``name``"
         return self.execute_command('TYPE', name)
@@ -1145,7 +1210,7 @@ class StrictRedis(object):
             DeprecationWarning('Call UNWATCH from a Pipeline object'))
 
     # LIST COMMANDS
-    def blpop(self, keys, timeout=0):
+    def blpop(self, keys, timeout=None):
         """
         LPOP a value off of the first non-empty list
         named in the ``keys`` list.
@@ -1154,7 +1219,6 @@ class StrictRedis(object):
         for ``timeout`` seconds, or until a value gets pushed on to one
         of the lists.
 
-        If timeout is 0, then block indefinitely.
         """
         if timeout is None:
             timeout = 0
@@ -1163,9 +1227,12 @@ class StrictRedis(object):
         else:
             keys = list(keys)
         keys.append(timeout)
-        return self.execute_command('BLPOP', *keys)
 
-    def brpop(self, keys, timeout=0):
+        decorator = namespace_format(multi=True, method=ignore_last)
+        f = decorator(cmd_execution_wrapper(self.execute_command, 'BLPOP'))
+        return f(self, *keys)
+
+    def brpop(self, keys, timeout=None):
         """
         RPOP a value off of the first non-empty list
         named in the ``keys`` list.
@@ -1183,7 +1250,10 @@ class StrictRedis(object):
         else:
             keys = list(keys)
         keys.append(timeout)
-        return self.execute_command('BRPOP', *keys)
+
+        decorator = namespace_format(multi=True, method=ignore_last)
+        f = decorator(cmd_execution_wrapper(self.execute_command, 'BRPOP'))
+        return f(self, *keys)
 
     def brpoplpush(self, src, dst, timeout=0):
         """
@@ -1196,8 +1266,12 @@ class StrictRedis(object):
         """
         if timeout is None:
             timeout = 0
-        return self.execute_command('BRPOPLPUSH', src, dst, timeout)
 
+        decorator = namespace_format(multi=True, method=ignore_last)
+        f = decorator(cmd_execution_wrapper(self.execute_command, 'BRPOPLPUSH'))
+        return f(self, src, dst, timeout)
+
+    @namespace_format()
     def lindex(self, name, index):
         """
         Return the item from list ``name`` at position ``index``
@@ -1207,6 +1281,7 @@ class StrictRedis(object):
         """
         return self.execute_command('LINDEX', name, index)
 
+    @namespace_format()
     def linsert(self, name, where, refvalue, value):
         """
         Insert ``value`` in list ``name`` either immediately before or after
@@ -1217,22 +1292,27 @@ class StrictRedis(object):
         """
         return self.execute_command('LINSERT', name, where, refvalue, value)
 
+    @namespace_format()
     def llen(self, name):
         "Return the length of the list ``name``"
         return self.execute_command('LLEN', name)
 
+    @namespace_format()
     def lpop(self, name):
         "Remove and return the first item of the list ``name``"
         return self.execute_command('LPOP', name)
 
+    @namespace_format()
     def lpush(self, name, *values):
         "Push ``values`` onto the head of the list ``name``"
         return self.execute_command('LPUSH', name, *values)
 
+    @namespace_format()
     def lpushx(self, name, value):
         "Push ``value`` onto the head of the list ``name`` if ``name`` exists"
         return self.execute_command('LPUSHX', name, value)
 
+    @namespace_format()
     def lrange(self, name, start, end):
         """
         Return a slice of the list ``name`` between
@@ -1243,6 +1323,7 @@ class StrictRedis(object):
         """
         return self.execute_command('LRANGE', name, start, end)
 
+    @namespace_format()
     def lrem(self, name, count, value):
         """
         Remove the first ``count`` occurrences of elements equal to ``value``
@@ -1255,10 +1336,12 @@ class StrictRedis(object):
         """
         return self.execute_command('LREM', name, count, value)
 
+    @namespace_format()
     def lset(self, name, index, value):
         "Set ``position`` of list ``name`` to ``value``"
         return self.execute_command('LSET', name, index, value)
 
+    @namespace_format()
     def ltrim(self, name, start, end):
         """
         Trim the list ``name``, removing all values not within the slice
@@ -1269,10 +1352,12 @@ class StrictRedis(object):
         """
         return self.execute_command('LTRIM', name, start, end)
 
+    @namespace_format()
     def rpop(self, name):
         "Remove and return the last item of the list ``name``"
         return self.execute_command('RPOP', name)
 
+    @namespace_format(multi=True)
     def rpoplpush(self, src, dst):
         """
         RPOP a value off of the ``src`` list and atomically LPUSH it
@@ -1280,10 +1365,12 @@ class StrictRedis(object):
         """
         return self.execute_command('RPOPLPUSH', src, dst)
 
+    @namespace_format()
     def rpush(self, name, *values):
         "Push ``values`` onto the tail of the list ``name``"
         return self.execute_command('RPUSH', name, *values)
 
+    @namespace_format()
     def rpushx(self, name, value):
         "Push ``value`` onto the tail of the list ``name`` if ``name`` exists"
         return self.execute_command('RPUSHX', name, value)
@@ -1295,10 +1382,10 @@ class StrictRedis(object):
 
         ``start`` and ``num`` allow for paging through the sorted data
 
-        ``by`` allows using an external key to weight and sort the items.
+        #``by`` allows using an external key to weight and sort the items.
             Use an "*" to indicate where in the key the item value is located
 
-        ``get`` allows for returning items from external keys rather than the
+        #``get`` allows for returning items from external keys rather than the
             sorted data itself.  Use an "*" to indicate where int he key
             the item value is located
 
@@ -1306,7 +1393,7 @@ class StrictRedis(object):
 
         ``alpha`` allows for sorting lexicographically rather than numerically
 
-        ``store`` allows for storing the result of the sort into
+        #``store`` allows for storing the result of the sort into
             the key ``store``
 
         ``groups`` if set to True and if ``get`` contains at least two
@@ -1353,7 +1440,10 @@ class StrictRedis(object):
                                 'two keys')
 
         options = {'groups': len(get) if groups else None}
-        return self.execute_command('SORT', *pieces, **options)
+
+        decorator = namespace_format(multi=True, method=every_other)
+        f = decorator(cmd_execution_wrapper(self.execute_command, 'SORT'))
+        return f(self, *pieces, **options)
 
     # SCAN COMMANDS
     def scan(self, cursor=0, match=None, count=None):
@@ -1368,9 +1458,17 @@ class StrictRedis(object):
         pieces = [cursor]
         if match is not None:
             pieces.extend([Token('MATCH'), match])
+        elif self.namespace:
+            # Would return non namespaced keys, so search for '*' and the
+            # namespace_formater will append the namespace, effectively
+            # returning only keys with the correct namespace.
+            pieces.extend([Token('MATCH'), '*'])
         if count is not None:
             pieces.extend([Token('COUNT'), count])
-        return self.execute_command('SCAN', *pieces)
+
+        decorator = namespace_format(multi=True, resp_format=True)
+        f = decorator(cmd_execution_wrapper(self.execute_command, 'SCAN'))
+        return f(self, *pieces)
 
     def scan_iter(self, match=None, count=None):
         """
@@ -1399,9 +1497,17 @@ class StrictRedis(object):
         pieces = [name, cursor]
         if match is not None:
             pieces.extend([Token('MATCH'), match])
+        elif self.namespace:
+            # Would return non namespaced keys, so search for '*' and the
+            # namespace_formater will append the namespace, effectively
+            # returning only keys with the correct namespace.
+            pieces.extend([Token('MATCH'), '*'])
         if count is not None:
             pieces.extend([Token('COUNT'), count])
-        return self.execute_command('SSCAN', *pieces)
+
+        decorator = namespace_format(multi=True)
+        f = decorator(cmd_execution_wrapper(self.execute_command, 'SSCAN'))
+        return f(self, *pieces)
 
     def sscan_iter(self, name, match=None, count=None):
         """
@@ -1419,6 +1525,7 @@ class StrictRedis(object):
             for item in data:
                 yield item
 
+    @namespace_format()
     def hscan(self, name, cursor=0, match=None, count=None):
         """
         Incrementally return key/value slices in a hash. Also return a cursor
@@ -1451,6 +1558,7 @@ class StrictRedis(object):
             for item in data.items():
                 yield item
 
+    @namespace_format()
     def zscan(self, name, cursor=0, match=None, count=None,
               score_cast_func=float):
         """
@@ -1492,19 +1600,23 @@ class StrictRedis(object):
                 yield item
 
     # SET COMMANDS
+    @namespace_format()
     def sadd(self, name, *values):
         "Add ``value(s)`` to set ``name``"
         return self.execute_command('SADD', name, *values)
 
+    @namespace_format()
     def scard(self, name):
         "Return the number of elements in set ``name``"
         return self.execute_command('SCARD', name)
 
+    @namespace_format(multi=True)
     def sdiff(self, keys, *args):
         "Return the difference of sets specified by ``keys``"
         args = list_or_args(keys, args)
         return self.execute_command('SDIFF', *args)
 
+    @namespace_format(multi=True)
     def sdiffstore(self, dest, keys, *args):
         """
         Store the difference of sets specified by ``keys`` into a new
@@ -1513,11 +1625,13 @@ class StrictRedis(object):
         args = list_or_args(keys, args)
         return self.execute_command('SDIFFSTORE', dest, *args)
 
+    @namespace_format(multi=True)
     def sinter(self, keys, *args):
         "Return the intersection of sets specified by ``keys``"
         args = list_or_args(keys, args)
         return self.execute_command('SINTER', *args)
 
+    @namespace_format(multi=True)
     def sinterstore(self, dest, keys, *args):
         """
         Store the intersection of sets specified by ``keys`` into a new
@@ -1526,22 +1640,27 @@ class StrictRedis(object):
         args = list_or_args(keys, args)
         return self.execute_command('SINTERSTORE', dest, *args)
 
+    @namespace_format()
     def sismember(self, name, value):
         "Return a boolean indicating if ``value`` is a member of set ``name``"
         return self.execute_command('SISMEMBER', name, value)
 
+    @namespace_format()
     def smembers(self, name):
         "Return all members of the set ``name``"
         return self.execute_command('SMEMBERS', name)
 
+    @namespace_format(multi=True, skip=[2])
     def smove(self, src, dst, value):
         "Move ``value`` from set ``src`` to set ``dst`` atomically"
         return self.execute_command('SMOVE', src, dst, value)
 
+    @namespace_format()
     def spop(self, name):
         "Remove and return a random member of set ``name``"
         return self.execute_command('SPOP', name)
 
+    @namespace_format()
     def srandmember(self, name, number=None):
         """
         If ``number`` is None, returns a random member of set ``name``.
@@ -1553,15 +1672,18 @@ class StrictRedis(object):
         args = number and [number] or []
         return self.execute_command('SRANDMEMBER', name, *args)
 
+    @namespace_format()
     def srem(self, name, *values):
         "Remove ``values`` from set ``name``"
         return self.execute_command('SREM', name, *values)
 
+    @namespace_format(multi=True)
     def sunion(self, keys, *args):
         "Return the union of sets specified by ``keys``"
         args = list_or_args(keys, args)
         return self.execute_command('SUNION', *args)
 
+    @namespace_format(multi=True)
     def sunionstore(self, dest, keys, *args):
         """
         Store the union of sets specified by ``keys`` into a new
@@ -1571,6 +1693,7 @@ class StrictRedis(object):
         return self.execute_command('SUNIONSTORE', dest, *args)
 
     # SORTED SET COMMANDS
+    @namespace_format(multi=True)
     def zadd(self, name, *args, **kwargs):
         """
         Set any number of score, element-name pairs to the key ``name``. Pairs
@@ -1593,10 +1716,12 @@ class StrictRedis(object):
             pieces.append(pair[0])
         return self.execute_command('ZADD', name, *pieces)
 
+    @namespace_format()
     def zcard(self, name):
         "Return the number of elements in the sorted set ``name``"
         return self.execute_command('ZCARD', name)
 
+    @namespace_format()
     def zcount(self, name, min, max):
         """
         Returns the number of elements in the sorted set at key ``name`` with
@@ -1604,10 +1729,12 @@ class StrictRedis(object):
         """
         return self.execute_command('ZCOUNT', name, min, max)
 
+    @namespace_format(multi=True)
     def zincrby(self, name, value, amount=1):
         "Increment the score of ``value`` in sorted set ``name`` by ``amount``"
         return self.execute_command('ZINCRBY', name, amount, value)
 
+    @namespace_format(multi=True, skip=[2])
     def zinterstore(self, dest, keys, aggregate=None):
         """
         Intersect multiple sorted sets specified by ``keys`` into
@@ -1616,6 +1743,7 @@ class StrictRedis(object):
         """
         return self._zaggregate('ZINTERSTORE', dest, keys, aggregate)
 
+    @namespace_format(lex=True)
     def zlexcount(self, name, min, max):
         """
         Return the number of items in the sorted set ``name`` between the
@@ -1623,6 +1751,7 @@ class StrictRedis(object):
         """
         return self.execute_command('ZLEXCOUNT', name, min, max)
 
+    @namespace_format()
     def zrange(self, name, start, end, desc=False, withscores=False,
                score_cast_func=float):
         """
@@ -1650,6 +1779,7 @@ class StrictRedis(object):
         }
         return self.execute_command(*pieces, **options)
 
+    @namespace_format(lex=True)
     def zrangebylex(self, name, min, max, start=None, num=None):
         """
         Return the lexicographical range of values from sorted set ``name``
@@ -1666,6 +1796,7 @@ class StrictRedis(object):
             pieces.extend([Token('LIMIT'), start, num])
         return self.execute_command(*pieces)
 
+    @namespace_format(lex=True)
     def zrevrangebylex(self, name, max, min, start=None, num=None):
         """
         Return the reversed lexicographical range of values from sorted set
@@ -1682,6 +1813,7 @@ class StrictRedis(object):
             pieces.extend([Token('LIMIT'), start, num])
         return self.execute_command(*pieces)
 
+    @namespace_format()
     def zrangebyscore(self, name, min, max, start=None, num=None,
                       withscores=False, score_cast_func=float):
         """
@@ -1710,6 +1842,7 @@ class StrictRedis(object):
         }
         return self.execute_command(*pieces, **options)
 
+    @namespace_format()
     def zrank(self, name, value):
         """
         Returns a 0-based value indicating the rank of ``value`` in sorted set
@@ -1717,10 +1850,12 @@ class StrictRedis(object):
         """
         return self.execute_command('ZRANK', name, value)
 
+    @namespace_format()
     def zrem(self, name, *values):
         "Remove member ``values`` from sorted set ``name``"
         return self.execute_command('ZREM', name, *values)
 
+    @namespace_format(lex=True)
     def zremrangebylex(self, name, min, max):
         """
         Remove all elements in the sorted set ``name`` between the
@@ -1730,6 +1865,7 @@ class StrictRedis(object):
         """
         return self.execute_command('ZREMRANGEBYLEX', name, min, max)
 
+    @namespace_format()
     def zremrangebyrank(self, name, min, max):
         """
         Remove all elements in the sorted set ``name`` with ranks between
@@ -1739,6 +1875,7 @@ class StrictRedis(object):
         """
         return self.execute_command('ZREMRANGEBYRANK', name, min, max)
 
+    @namespace_format()
     def zremrangebyscore(self, name, min, max):
         """
         Remove all elements in the sorted set ``name`` with scores
@@ -1746,6 +1883,7 @@ class StrictRedis(object):
         """
         return self.execute_command('ZREMRANGEBYSCORE', name, min, max)
 
+    @namespace_format()
     def zrevrange(self, name, start, end, withscores=False,
                   score_cast_func=float):
         """
@@ -1768,6 +1906,7 @@ class StrictRedis(object):
         }
         return self.execute_command(*pieces, **options)
 
+    @namespace_format()
     def zrevrangebyscore(self, name, max, min, start=None, num=None,
                          withscores=False, score_cast_func=float):
         """
@@ -1796,6 +1935,7 @@ class StrictRedis(object):
         }
         return self.execute_command(*pieces, **options)
 
+    @namespace_format()
     def zrevrank(self, name, value):
         """
         Returns a 0-based value indicating the descending rank of
@@ -1803,10 +1943,12 @@ class StrictRedis(object):
         """
         return self.execute_command('ZREVRANK', name, value)
 
+    @namespace_format()
     def zscore(self, name, value):
         "Return the score of element ``value`` in sorted set ``name``"
         return self.execute_command('ZSCORE', name, value)
 
+    @namespace_format(multi=True, skip=[2])
     def zunionstore(self, dest, keys, aggregate=None):
         """
         Union multiple sorted sets specified by ``keys`` into
@@ -1831,10 +1973,12 @@ class StrictRedis(object):
         return self.execute_command(*pieces)
 
     # HYPERLOGLOG COMMANDS
+    @namespace_format()
     def pfadd(self, name, *values):
         "Adds the specified elements to the specified HyperLogLog."
         return self.execute_command('PFADD', name, *values)
 
+    @namespace_format(multi=True)
     def pfcount(self, *sources):
         """
         Return the approximated cardinality of
@@ -1842,45 +1986,55 @@ class StrictRedis(object):
         """
         return self.execute_command('PFCOUNT', *sources)
 
+    @namespace_format(multi=True)
     def pfmerge(self, dest, *sources):
         "Merge N different HyperLogLogs into a single one."
         return self.execute_command('PFMERGE', dest, *sources)
 
     # HASH COMMANDS
+    @namespace_format()
     def hdel(self, name, *keys):
         "Delete ``keys`` from hash ``name``"
         return self.execute_command('HDEL', name, *keys)
 
+    @namespace_format()
     def hexists(self, name, key):
         "Returns a boolean indicating if ``key`` exists within hash ``name``"
         return self.execute_command('HEXISTS', name, key)
 
+    @namespace_format()
     def hget(self, name, key):
         "Return the value of ``key`` within the hash ``name``"
         return self.execute_command('HGET', name, key)
 
+    @namespace_format()
     def hgetall(self, name):
         "Return a Python dict of the hash's name/value pairs"
         return self.execute_command('HGETALL', name)
 
+    @namespace_format()
     def hincrby(self, name, key, amount=1):
         "Increment the value of ``key`` in hash ``name`` by ``amount``"
         return self.execute_command('HINCRBY', name, key, amount)
 
+    @namespace_format()
     def hincrbyfloat(self, name, key, amount=1.0):
         """
         Increment the value of ``key`` in hash ``name`` by floating ``amount``
         """
         return self.execute_command('HINCRBYFLOAT', name, key, amount)
 
+    @namespace_format()
     def hkeys(self, name):
         "Return the list of keys within hash ``name``"
         return self.execute_command('HKEYS', name)
 
+    @namespace_format()
     def hlen(self, name):
         "Return the number of elements in hash ``name``"
         return self.execute_command('HLEN', name)
 
+    @namespace_format()
     def hset(self, name, key, value):
         """
         Set ``key`` to ``value`` within hash ``name``
@@ -1888,6 +2042,7 @@ class StrictRedis(object):
         """
         return self.execute_command('HSET', name, key, value)
 
+    @namespace_format()
     def hsetnx(self, name, key, value):
         """
         Set ``key`` to ``value`` within hash ``name`` if ``key`` does not
@@ -1895,6 +2050,7 @@ class StrictRedis(object):
         """
         return self.execute_command('HSETNX', name, key, value)
 
+    @namespace_format()
     def hmset(self, name, mapping):
         """
         Set key to value within hash ``name`` for each corresponding
@@ -1907,15 +2063,18 @@ class StrictRedis(object):
             items.extend(pair)
         return self.execute_command('HMSET', name, *items)
 
+    @namespace_format()
     def hmget(self, name, keys, *args):
         "Returns a list of values ordered identically to ``keys``"
         args = list_or_args(keys, args)
         return self.execute_command('HMGET', name, *args)
 
+    @namespace_format()
     def hvals(self, name):
         "Return the list of values within hash ``name``"
         return self.execute_command('HVALS', name)
 
+    @namespace_format()
     def publish(self, channel, message):
         """
         Publish ``message`` on ``channel``.
@@ -1923,6 +2082,7 @@ class StrictRedis(object):
         """
         return self.execute_command('PUBLISH', channel, message)
 
+    @namespace_format(multi=True, arg_start=2)
     def eval(self, script, numkeys, *keys_and_args):
         """
         Execute the Lua ``script``, specifying the ``numkeys`` the script
@@ -1934,6 +2094,7 @@ class StrictRedis(object):
         """
         return self.execute_command('EVAL', script, numkeys, *keys_and_args)
 
+    @namespace_format(multi=True, arg_start=2)
     def evalsha(self, sha, numkeys, *keys_and_args):
         """
         Use the ``sha`` to execute a Lua script already registered via EVAL
@@ -1992,24 +2153,8 @@ class Redis(StrictRedis):
         }
     )
 
-    def __init__(self, *args, **kwargs):
-        self.namespace = kwargs.pop('namespace', None)
-        return super(Redis, self).__init__(*args, **kwargs)
 
-    def execute_command(self, *args, **options):
-        if self.namespace:
-            self.ns = NamespaceWrapper(self.namespace, args)
-            args = self.ns.format_args()
-        return super(Redis, self).execute_command(*args, **options)
-
-    def parse_response(self, connection, command_name, **options):
-        parent = super(Redis, self)
-        response = parent.parse_response(connection, command_name, **options)
-        if self.namespace:
-            return self.ns.format_response(response)
-        return response
-
-    def pipeline(self, transaction=True, shard_hint=None):
+    def pipeline(self, transaction=True, shard_hint=None, namespace=None):
         """
         Return a new pipeline object that can queue multiple commands for
         later execution. ``transaction`` indicates whether all commands
@@ -2021,8 +2166,10 @@ class Redis(StrictRedis):
             self.connection_pool,
             self.response_callbacks,
             transaction,
-            shard_hint)
+            shard_hint,
+            namespace or self.namespace)
 
+    @namespace_format()
     def setex(self, name, value, time):
         """
         Set the value of key ``name`` to ``value`` that expires in ``time``
@@ -2033,6 +2180,7 @@ class Redis(StrictRedis):
             time = time.seconds + time.days * 24 * 3600
         return self.execute_command('SETEX', name, time, value)
 
+    @namespace_format()
     def lrem(self, name, value, num=0):
         """
         Remove the first ``num`` occurrences of elements equal to ``value``
@@ -2045,6 +2193,7 @@ class Redis(StrictRedis):
         """
         return self.execute_command('LREM', name, num, value)
 
+    @namespace_format()
     def zadd(self, name, *args, **kwargs):
         """
         NOTE: The order of arguments differs from that of the official ZADD
@@ -2089,7 +2238,8 @@ class PubSub(object):
     UNSUBSCRIBE_MESSAGE_TYPES = ('unsubscribe', 'punsubscribe')
 
     def __init__(self, connection_pool, shard_hint=None,
-                 ignore_subscribe_messages=False):
+                 ignore_subscribe_messages=False, namespace=None):
+        self.namespace = namespace
         self.connection_pool = connection_pool
         self.shard_hint = shard_hint
         self.ignore_subscribe_messages = ignore_subscribe_messages
@@ -2216,16 +2366,20 @@ class PubSub(object):
         new_patterns.update(dict.fromkeys(imap(self.encode, args)))
         for pattern, handler in iteritems(kwargs):
             new_patterns[self.encode(pattern)] = handler
-        ret_val = self.execute_command('PSUBSCRIBE', *iterkeys(new_patterns))
+
+        decorator = namespace_format(multi=True)
+        f = decorator(cmd_execution_wrapper(self.execute_command, 'PSUBSCRIBE'))
+        ret_val = f(self, *iterkeys(new_patterns))
         # update the patterns dict AFTER we send the command. we don't want to
         # subscribe twice to these patterns, once for the command and again
         # for the reconnection.
         self.patterns.update(new_patterns)
         return ret_val
 
+    @namespace_format(multi=True)
     def punsubscribe(self, *args):
         """
-        Unsubscribe from the supplied patterns. If empy, unsubscribe from
+        Unsubscribe from the supplied patterns. If empty, unsubscribe from
         all patterns.
         """
         if args:
@@ -2246,13 +2400,17 @@ class PubSub(object):
         new_channels.update(dict.fromkeys(imap(self.encode, args)))
         for channel, handler in iteritems(kwargs):
             new_channels[self.encode(channel)] = handler
-        ret_val = self.execute_command('SUBSCRIBE', *iterkeys(new_channels))
+
+        decorator = namespace_format(multi=True)
+        f = decorator(cmd_execution_wrapper(self.execute_command, 'SUBSCRIBE'))
+        ret_val = f(self, *iterkeys(new_channels))
         # update the channels dict AFTER we send the command. we don't want to
         # subscribe twice to these channels, once for the command and again
         # for the reconnection.
         self.channels.update(new_channels)
         return ret_val
 
+    @namespace_format(multi=True)
     def unsubscribe(self, *args):
         """
         Unsubscribe from the supplied channels. If empty, unsubscribe from
@@ -2290,17 +2448,23 @@ class PubSub(object):
         """
         message_type = nativestr(response[0])
         if message_type == 'pmessage':
+            channel = response[2]
+            if self.namespace:
+                channel = remove_namespace(self.namespace, channel)
             message = {
                 'type': message_type,
                 'pattern': response[1],
-                'channel': response[2],
+                'channel': channel,
                 'data': response[3]
             }
         else:
+            channel = response[1]
+            if self.namespace:
+                channel = remove_namespace(self.namespace, channel)
             message = {
                 'type': message_type,
                 'pattern': None,
-                'channel': response[1],
+                'channel': channel,
                 'data': response[2]
             }
 
@@ -2396,12 +2560,13 @@ class BasePipeline(object):
     UNWATCH_COMMANDS = set(('DISCARD', 'EXEC', 'UNWATCH'))
 
     def __init__(self, connection_pool, response_callbacks, transaction,
-                 shard_hint):
+                 shard_hint, namespace):
         self.connection_pool = connection_pool
         self.connection = None
         self.response_callbacks = response_callbacks
         self.transaction = transaction
         self.shard_hint = shard_hint
+        self.namespace = namespace
 
         self.watching = False
         self.reset()
