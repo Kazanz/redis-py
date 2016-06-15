@@ -12,8 +12,7 @@ def cmd_execution_wrapper(f, cmd):
 
 
 def namespace_format(arg_format=True, resp_format=False, multi=False,
-                     arg_start=0, method=None, skip=[], resp_keys=[],
-                     lex=False):
+                     arg_start=0, method=None, skip=[], resp_keys=[]):
     """Decorator to format args and responses of redis funcs with namespaces.
 
     :param arg_format: If True add namespace to args passed to the func.
@@ -25,9 +24,6 @@ def namespace_format(arg_format=True, resp_format=False, multi=False,
     :param skip: List of indexes of args to not append namespace to.
     :param resp_keys: List of keys in the response where the values need
         namespace removal.
-    :param lex: If True any arg that starts with ( or [ will have the namespace
-        appended after the initial character.
-        ex: "(arg)" will be "(namepace:arg)" not "namespace:(arg)"
     """
     def decorator(f):
         def wrapper(self, *args, **kwargs):
@@ -35,7 +31,7 @@ def namespace_format(arg_format=True, resp_format=False, multi=False,
                 args = list(args or f.__defaults__)
                 if arg_format and args:
                     args = format_args(self.namespace, args, multi, arg_start,
-                                       method, skip, lex)
+                                       method, skip)
             response = f(self, *args, **kwargs)
             if self.namespace and resp_format:
                 response = remove_namespace(self.namespace, response, resp_keys)
@@ -44,8 +40,8 @@ def namespace_format(arg_format=True, resp_format=False, multi=False,
     return decorator
 
 
-def format_args(namespace, args, multi=False, arg_start=0, method=None, skip=[],
-                lex=False):
+def format_args(namespace, args, multi=False, arg_start=0, method=None,
+                skip=[]):
     """Append namespace to applicaple args before returning to send to redis."""
     l = len(args) if multi else 1
     for i in range(arg_start, l):
@@ -53,20 +49,18 @@ def format_args(namespace, args, multi=False, arg_start=0, method=None, skip=[],
         if i in skip:
             continue
         elif isinstance(arg, (list, tuple)):
-            args[i] = format_args(namespace, arg, multi=True, lex=lex)
+            args[i] = format_args(namespace, arg, multi=True)
         elif not isinstance(arg, (str, bytes)):
             continue
         elif method and not method(arg_start, l, i):
             continue
         else:
-            args[i] = format_arg(namespace, arg, lex)
+            args[i] = format_arg(namespace, arg)
     return args
 
 
-def format_arg(namespace, arg, lex):
+def format_arg(namespace, arg):
     """Appends the namespace to the arg."""
-    if lex and arg[0] in ('[', '('):
-        return arg[0] + namespace + arg[1:]
     try:
         return namespace + arg
     except:

@@ -1743,7 +1743,7 @@ class StrictRedis(object):
         """
         return self._zaggregate('ZINTERSTORE', dest, keys, aggregate)
 
-    @namespace_format(lex=True)
+    @namespace_format()
     def zlexcount(self, name, min, max):
         """
         Return the number of items in the sorted set ``name`` between the
@@ -1779,7 +1779,7 @@ class StrictRedis(object):
         }
         return self.execute_command(*pieces, **options)
 
-    @namespace_format(lex=True)
+    @namespace_format()
     def zrangebylex(self, name, min, max, start=None, num=None):
         """
         Return the lexicographical range of values from sorted set ``name``
@@ -1796,7 +1796,7 @@ class StrictRedis(object):
             pieces.extend([Token('LIMIT'), start, num])
         return self.execute_command(*pieces)
 
-    @namespace_format(lex=True)
+    @namespace_format()
     def zrevrangebylex(self, name, max, min, start=None, num=None):
         """
         Return the reversed lexicographical range of values from sorted set
@@ -1855,7 +1855,7 @@ class StrictRedis(object):
         "Remove member ``values`` from sorted set ``name``"
         return self.execute_command('ZREM', name, *values)
 
-    @namespace_format(lex=True)
+    @namespace_format()
     def zremrangebylex(self, name, min, max):
         """
         Remove all elements in the sorted set ``name`` between the
