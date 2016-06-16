@@ -34,6 +34,20 @@ from redis.namespace import (
 SYM_EMPTY = b('')
 
 
+def wrapped(namespace):
+    def deco(f):
+        def wrapper(*args, **kwargs):
+            return remove_namespace(namespace, f(*args, **kwargs))
+        return wrapper
+    return deco
+
+
+def wrap_stuff(namespace, functions):
+    functions['SCAN'] = wrapped(namespace)(functions['SCAN'])
+    functions['KEYS'] = wrapped(namespace)(functions['KEYS'])
+    return functions
+
+
 def list_or_args(keys, args):
     # returns a single list combining keys and args
     try:
@@ -459,6 +473,9 @@ class StrictRedis(object):
 
         self.response_callbacks = self.__class__.RESPONSE_CALLBACKS.copy()
         self.namespace = namespace
+        if self.namespace:
+            self.response_callbacks = wrap_stuff(
+                self.namespace, self.response_callbacks)
 
     def __repr__(self):
         return "%s<%s>" % (type(self).__name__, repr(self.connection_pool))
@@ -1466,9 +1483,10 @@ class StrictRedis(object):
         if count is not None:
             pieces.extend([Token('COUNT'), count])
 
-        decorator = namespace_format(multi=True, resp_format=True)
-        f = decorator(cmd_execution_wrapper(self.execute_command, 'SCAN'))
-        return f(self, *pieces)
+        self.execute_command('SCAN', *pieces)
+        #decorator = namespace_format(multi=True, resp_format=True)
+        #f = decorator(cmd_execution_wrapper(self.execute_command, 'SCAN'))
+        #return f(self, *pieces)
 
     def scan_iter(self, match=None, count=None):
         """

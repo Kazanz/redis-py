@@ -34,6 +34,7 @@ def namespace_format(arg_format=True, resp_format=False, multi=False,
                                        method, skip)
             response = f(self, *args, **kwargs)
             if self.namespace and resp_format:
+                import pdb; pdb.set_trace();
                 response = remove_namespace(self.namespace, response, resp_keys)
             return response
         return wrapper
