@@ -1,3 +1,21 @@
+def remove_namespace_pipeline_wrapper(f):
+    """
+    Wraps BasePipeline's `_execute` methods to remove the namespace from
+    responses where the cmds in the `command_stack` contain the
+    `remove_namspace` option set to True. This option is set in the
+    `namespace_format` decorator when the response is a Pipeline object.
+    """
+    def wrapper(self, *args, **kwargs):
+        res = f(self, *args, **kwargs)
+        if self.namespace:
+            namespaced_indexes = [i for i, cmd in enumerate(self.command_stack)
+                                  if cmd[-1].get('remove_namespace')]
+            for index in namespaced_indexes:
+                res[index] = list(remove_namespace(self.namespace, res[index]))
+        return res
+    return wrapper
+
+
 def cmd_execution_wrapper(f, cmd):
     """
     Wraps redis class' `execute_command` so that it can be decorated by
@@ -24,6 +42,10 @@ def namespace_format(arg_format=True, resp_format=False, multi=False,
     :param skip: List of indexes of args to not append namespace to.
     :param resp_keys: List of keys in the response where the values need
         namespace removal.
+
+    In the case of a Pipeline.  The `namespace_format` option is added to
+    that partcular option in the `command_stack` of the pipeline so that
+    `remove_namespace` is executed on the appropriate results.
     """
     def decorator(f):
         def wrapper(self, *args, **kwargs):
@@ -34,7 +56,11 @@ def namespace_format(arg_format=True, resp_format=False, multi=False,
                                        method, skip)
             response = f(self, *args, **kwargs)
             if self.namespace and resp_format:
-                response = remove_namespace(self.namespace, response, resp_keys)
+                if getattr(response, 'command_stack', None):
+                    response.command_stack[-1][-1]['remove_namespace'] = True
+                else:
+                    response = remove_namespace(self.namespace, response,
+                                                resp_keys)
             return response
         return wrapper
     return decorator

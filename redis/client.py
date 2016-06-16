@@ -29,6 +29,7 @@ from redis.namespace import (
     ignore_last,
     namespace_format,
     remove_namespace,
+    remove_namespace_pipeline_wrapper,
 )
 
 SYM_EMPTY = b('')
@@ -2674,6 +2675,7 @@ class BasePipeline(object):
         self.command_stack.append((args, options))
         return self
 
+    @remove_namespace_pipeline_wrapper
     def _execute_transaction(self, connection, commands, raise_on_error):
         cmds = chain([(('MULTI', ), {})], commands, [(('EXEC', ), {})])
         all_cmds = connection.pack_commands([args for args, _ in cmds])
@@ -2733,8 +2735,10 @@ class BasePipeline(object):
                 if command_name in self.response_callbacks:
                     r = self.response_callbacks[command_name](r, **options)
             data.append(r)
+
         return data
 
+    @remove_namespace_pipeline_wrapper
     def _execute_pipeline(self, connection, commands, raise_on_error):
         # build up all commands into a single request to increase network perf
         all_cmds = connection.pack_commands([args for args, _ in commands])
@@ -2750,6 +2754,7 @@ class BasePipeline(object):
 
         if raise_on_error:
             self.raise_first_error(commands, response)
+
         return response
 
     def raise_first_error(self, commands, response):
