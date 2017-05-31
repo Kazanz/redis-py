@@ -287,6 +287,70 @@ def parse_slowlog_get(response, **options):
     } for item in response]
 
 
+def parse_cluster_info(response, **options):
+    return dict([line.split(':') for line in response.splitlines() if line])
+
+
+def _parse_node_line(line):
+    line_items = line.split(' ')
+    node_id, addr, flags, master_id, ping, pong, epoch, \
+        connected = line.split(' ')[:8]
+    slots = [sl.split('-') for sl in line_items[8:]]
+    node_dict = {
+        'node_id': node_id,
+        'flags': flags,
+        'master_id': master_id,
+        'last_ping_sent': ping,
+        'last_pong_rcvd': pong,
+        'epoch': epoch,
+        'slots': slots,
+        'connected': True if connected == 'connected' else False
+    }
+    return addr, node_dict
+
+
+def parse_cluster_nodes(response, **options):
+    raw_lines = response
+    if isinstance(response, basestring):
+        raw_lines = response.splitlines()
+    return dict([_parse_node_line(line) for line in raw_lines])
+
+
+def parse_georadius_generic(response, **options):
+    if options['store'] or options['store_dist']:
+        # `store` and `store_diff` cant be combined
+        # with other command arguments.
+        return response
+
+    if type(response) != list:
+        response_list = [response]
+    else:
+        response_list = response
+
+    if not options['withdist'] and not options['withcoord']\
+            and not options['withhash']:
+        # just a bunch of places
+        return [nativestr(r) for r in response_list]
+
+    cast = {
+        'withdist': float,
+        'withcoord': lambda ll: (float(ll[0]), float(ll[1])),
+        'withhash': int
+    }
+
+    # zip all output results with each casting functino to get
+    # the properly native Python value.
+    f = [nativestr]
+    f += [cast[o] for o in ['withdist', 'withhash', 'withcoord'] if options[o]]
+    return [
+        list(map(lambda fv: fv[0](fv[1]), zip(f, r))) for r in response_list
+    ]
+
+
+def parse_pubsub_numsub(response, **options):
+    return list(zip(response[0::2], response[1::2]))
+
+
 class StrictRedis(object):
     """
     Implementation of the Redis protocol.
@@ -307,14 +371,18 @@ class StrictRedis(object):
             'BITCOUNT BITPOS DECRBY DEL GETBIT HDEL HLEN INCRBY LINSERT LLEN '
             'LPUSHX PFADD PFCOUNT RPUSHX SADD SCARD SDIFFSTORE SETBIT '
             'SETRANGE SINTERSTORE SREM STRLEN SUNIONSTORE ZADD ZCARD '
-            'ZLEXCOUNT ZREM ZREMRANGEBYLEX ZREMRANGEBYRANK ZREMRANGEBYSCORE',
+            'ZLEXCOUNT ZREM ZREMRANGEBYLEX ZREMRANGEBYRANK ZREMRANGEBYSCORE '
+            'GEOADD',
             int
         ),
-        string_keys_to_dict('INCRBYFLOAT HINCRBYFLOAT', float),
+        string_keys_to_dict(
+            'INCRBYFLOAT HINCRBYFLOAT GEODIST',
+            float
+        ),
         string_keys_to_dict(
             # these return OK, or int if redis-server is >=1.3.4
             'LPUSH RPUSH',
-            lambda r: isinstance(r, long) and r or nativestr(r) == 'OK'
+            lambda r: isinstance(r, (long, int)) and r or nativestr(r) == 'OK'
         ),
         string_keys_to_dict('SORT', sort_return_tuples),
         string_keys_to_dict('ZSCORE ZINCRBY', float_or_none),
@@ -369,14 +437,39 @@ class StrictRedis(object):
             'SLOWLOG RESET': bool_ok,
             'SSCAN': parse_scan,
             'TIME': lambda x: (int(x[0]), int(x[1])),
-            'ZSCAN': parse_zscan
+            'ZSCAN': parse_zscan,
+            'CLUSTER ADDSLOTS': bool_ok,
+            'CLUSTER COUNT-FAILURE-REPORTS': lambda x: int(x),
+            'CLUSTER COUNTKEYSINSLOT': lambda x: int(x),
+            'CLUSTER DELSLOTS': bool_ok,
+            'CLUSTER FAILOVER': bool_ok,
+            'CLUSTER FORGET': bool_ok,
+            'CLUSTER INFO': parse_cluster_info,
+            'CLUSTER KEYSLOT': lambda x: int(x),
+            'CLUSTER MEET': bool_ok,
+            'CLUSTER NODES': parse_cluster_nodes,
+            'CLUSTER REPLICATE': bool_ok,
+            'CLUSTER RESET': bool_ok,
+            'CLUSTER SAVECONFIG': bool_ok,
+            'CLUSTER SET-CONFIG-EPOCH': bool_ok,
+            'CLUSTER SETSLOT': bool_ok,
+            'CLUSTER SLAVES': parse_cluster_nodes,
+            'GEOPOS': lambda r: list(map(lambda ll: (float(ll[0]),
+                                         float(ll[1])), r)),
+            'GEOHASH': lambda r: list(map(nativestr, r)),
+            'GEORADIUS': parse_georadius_generic,
+            'GEORADIUSBYMEMBER': parse_georadius_generic,
+            'PUBSUB NUMSUB': parse_pubsub_numsub,
         }
     )
 
     @classmethod
     def from_url(cls, url, db=None, **kwargs):
         """
-        Return a Redis client object configured from the given URL.
+        Return a Redis client object configured from the given URL, which must
+        use either `the ``redis://`` scheme
+        <http://www.iana.org/assignments/uri-schemes/prov/redis>`_ for RESP
+        connections or the ``unix://`` scheme for Unix domain sockets.
 
         For example::
 
@@ -761,7 +854,8 @@ class StrictRedis(object):
         instance is promoted to a master instead.
         """
         if host is None and port is None:
-            return self.execute_command('SLAVEOF', Token('NO'), Token('ONE'))
+            return self.execute_command('SLAVEOF', Token.get_token('NO'),
+                                        Token.get_token('ONE'))
         return self.execute_command('SLAVEOF', host, port)
 
     def slowlog_get(self, num=None):
@@ -1090,13 +1184,17 @@ class StrictRedis(object):
         "Rename key ``src`` to ``dst`` if ``dst`` doesn't already exist"
         return self.execute_command('RENAMENX', src, dst)
 
+    
     @namespace_format()
-    def restore(self, name, ttl, value):
+    def restore(self, name, ttl, value, replace=False):
         """
         Create a key using the provided serialized value, previously obtained
         using DUMP.
         """
-        return self.execute_command('RESTORE', name, ttl, value)
+        params = [name, ttl, value]
+        if replace:
+            params.append('REPLACE')
+        return self.execute_command('RESTORE', *params)
 
     @namespace_format()
     def set(self, name, value, ex=None, px=None, nx=False, xx=False):
@@ -1114,12 +1212,12 @@ class StrictRedis(object):
             already exists.
         """
         pieces = [name, value]
-        if ex:
+        if ex is not None:
             pieces.append('EX')
             if isinstance(ex, datetime.timedelta):
                 ex = ex.seconds + ex.days * 24 * 3600
             pieces.append(ex)
-        if px:
+        if px is not None:
             pieces.append('PX')
             if isinstance(px, datetime.timedelta):
                 ms = int(px.microseconds / 1000)
@@ -1408,10 +1506,10 @@ class StrictRedis(object):
 
         pieces = [name]
         if by is not None:
-            pieces.append(Token('BY'))
+            pieces.append(Token.get_token('BY'))
             pieces.append(by)
         if start is not None and num is not None:
-            pieces.append(Token('LIMIT'))
+            pieces.append(Token.get_token('LIMIT'))
             pieces.append(start)
             pieces.append(num)
         if get is not None:
@@ -1420,18 +1518,18 @@ class StrictRedis(object):
             # values. We can't just iterate blindly because strings are
             # iterable.
             if isinstance(get, basestring):
-                pieces.append(Token('GET'))
+                pieces.append(Token.get_token('GET'))
                 pieces.append(get)
             else:
                 for g in get:
-                    pieces.append(Token('GET'))
+                    pieces.append(Token.get_token('GET'))
                     pieces.append(g)
         if desc:
-            pieces.append(Token('DESC'))
+            pieces.append(Token.get_token('DESC'))
         if alpha:
-            pieces.append(Token('ALPHA'))
+            pieces.append(Token.get_token('ALPHA'))
         if store is not None:
-            pieces.append(Token('STORE'))
+            pieces.append(Token.get_token('STORE'))
             pieces.append(store)
 
         if groups:
@@ -1458,18 +1556,15 @@ class StrictRedis(object):
         """
         pieces = [cursor]
         if match is not None:
-            pieces.extend([Token('MATCH'), match])
+            pieces.extend([Token.get_token('MATCH'), match])
         elif self.namespace:
             # Would return non namespaced keys, so search for '*' and the
             # namespace_formater will append the namespace, effectively
             # returning only keys with the correct namespace.
             pieces.extend([Token('MATCH'), '*'])
         if count is not None:
-            pieces.extend([Token('COUNT'), count])
-
-        decorator = namespace_format(multi=True, resp_format=True)
-        f = decorator(cmd_execution_wrapper(self.execute_command, 'SCAN'))
-        return f(self, *pieces)
+            pieces.extend([Token.get_token('COUNT'), count])
+        return self.execute_command('SCAN', *pieces)
 
     def scan_iter(self, match=None, count=None):
         """
@@ -1497,18 +1592,15 @@ class StrictRedis(object):
         """
         pieces = [name, cursor]
         if match is not None:
-            pieces.extend([Token('MATCH'), match])
+            pieces.extend([Token.get_token('MATCH'), match])
         elif self.namespace:
             # Would return non namespaced keys, so search for '*' and the
             # namespace_formater will append the namespace, effectively
             # returning only keys with the correct namespace.
             pieces.extend([Token('MATCH'), '*'])
         if count is not None:
-            pieces.extend([Token('COUNT'), count])
-
-        decorator = namespace_format(multi=True)
-        f = decorator(cmd_execution_wrapper(self.execute_command, 'SSCAN'))
-        return f(self, *pieces)
+            pieces.extend([Token.get_token('COUNT'), count])
+        return self.execute_command('SSCAN', *pieces)
 
     def sscan_iter(self, name, match=None, count=None):
         """
@@ -1538,9 +1630,9 @@ class StrictRedis(object):
         """
         pieces = [name, cursor]
         if match is not None:
-            pieces.extend([Token('MATCH'), match])
+            pieces.extend([Token.get_token('MATCH'), match])
         if count is not None:
-            pieces.extend([Token('COUNT'), count])
+            pieces.extend([Token.get_token('COUNT'), count])
         return self.execute_command('HSCAN', *pieces)
 
     def hscan_iter(self, name, match=None, count=None):
@@ -1574,9 +1666,9 @@ class StrictRedis(object):
         """
         pieces = [name, cursor]
         if match is not None:
-            pieces.extend([Token('MATCH'), match])
+            pieces.extend([Token.get_token('MATCH'), match])
         if count is not None:
-            pieces.extend([Token('COUNT'), count])
+            pieces.extend([Token.get_token('COUNT'), count])
         options = {'score_cast_func': score_cast_func}
         return self.execute_command('ZSCAN', *pieces, **options)
 
@@ -1773,7 +1865,7 @@ class StrictRedis(object):
                                   score_cast_func)
         pieces = ['ZRANGE', name, start, end]
         if withscores:
-            pieces.append(Token('WITHSCORES'))
+            pieces.append(Token.get_token('WITHSCORES'))
         options = {
             'withscores': withscores,
             'score_cast_func': score_cast_func
@@ -1794,7 +1886,7 @@ class StrictRedis(object):
             raise RedisError("``start`` and ``num`` must both be specified")
         pieces = ['ZRANGEBYLEX', name, min, max]
         if start is not None and num is not None:
-            pieces.extend([Token('LIMIT'), start, num])
+            pieces.extend([Token.get_token('LIMIT'), start, num])
         return self.execute_command(*pieces)
 
     @namespace_format()
@@ -1811,7 +1903,7 @@ class StrictRedis(object):
             raise RedisError("``start`` and ``num`` must both be specified")
         pieces = ['ZREVRANGEBYLEX', name, max, min]
         if start is not None and num is not None:
-            pieces.extend([Token('LIMIT'), start, num])
+            pieces.extend([Token.get_token('LIMIT'), start, num])
         return self.execute_command(*pieces)
 
     @namespace_format()
@@ -1834,9 +1926,9 @@ class StrictRedis(object):
             raise RedisError("``start`` and ``num`` must both be specified")
         pieces = ['ZRANGEBYSCORE', name, min, max]
         if start is not None and num is not None:
-            pieces.extend([Token('LIMIT'), start, num])
+            pieces.extend([Token.get_token('LIMIT'), start, num])
         if withscores:
-            pieces.append(Token('WITHSCORES'))
+            pieces.append(Token.get_token('WITHSCORES'))
         options = {
             'withscores': withscores,
             'score_cast_func': score_cast_func
@@ -1900,7 +1992,7 @@ class StrictRedis(object):
         """
         pieces = ['ZREVRANGE', name, start, end]
         if withscores:
-            pieces.append(Token('WITHSCORES'))
+            pieces.append(Token.get_token('WITHSCORES'))
         options = {
             'withscores': withscores,
             'score_cast_func': score_cast_func
@@ -1927,9 +2019,9 @@ class StrictRedis(object):
             raise RedisError("``start`` and ``num`` must both be specified")
         pieces = ['ZREVRANGEBYSCORE', name, max, min]
         if start is not None and num is not None:
-            pieces.extend([Token('LIMIT'), start, num])
+            pieces.extend([Token.get_token('LIMIT'), start, num])
         if withscores:
-            pieces.append(Token('WITHSCORES'))
+            pieces.append(Token.get_token('WITHSCORES'))
         options = {
             'withscores': withscores,
             'score_cast_func': score_cast_func
@@ -1966,10 +2058,10 @@ class StrictRedis(object):
             weights = None
         pieces.extend(keys)
         if weights:
-            pieces.append(Token('WEIGHTS'))
+            pieces.append(Token.get_token('WEIGHTS'))
             pieces.extend(weights)
         if aggregate:
-            pieces.append(Token('AGGREGATE'))
+            pieces.append(Token.get_token('AGGREGATE'))
             pieces.append(aggregate)
         return self.execute_command(*pieces)
 
@@ -2083,7 +2175,28 @@ class StrictRedis(object):
         """
         return self.execute_command('PUBLISH', channel, message)
 
-    @namespace_format(multi=True, arg_start=2)
+    def pubsub_channels(self, pattern='*'):
+        """
+        Return a list of channels that have at least one subscriber
+        """
+        return self.execute_command('PUBSUB CHANNELS', pattern)
+
+    def pubsub_numpat(self):
+        """
+        Returns the number of subscriptions to patterns
+        """
+        return self.execute_command('PUBSUB NUMPAT')
+
+    def pubsub_numsub(self, *args):
+        """
+        Return a list of (channel, number of subscribers) tuples
+        for each channel given in ``*args``
+        """
+        return self.execute_command('PUBSUB NUMSUB', *args)
+
+    def cluster(self, cluster_arg, *args):
+        return self.execute_command('CLUSTER %s' % cluster_arg.upper(), *args)
+
     def eval(self, script, numkeys, *keys_and_args):
         """
         Execute the Lua ``script``, specifying the ``numkeys`` the script
@@ -2136,6 +2249,135 @@ class StrictRedis(object):
         with Lua scripts.
         """
         return Script(self, script)
+
+    # GEO COMMANDS
+    def geoadd(self, name, *values):
+        """
+        Add the specified geospatial items to the specified key identified
+        by the ``name`` argument. The Geospatial items are given as ordered
+        members of the ``values`` argument, each item or place is formed by
+        the triad longitude, latitude and name.
+        """
+        if len(values) % 3 != 0:
+            raise RedisError("GEOADD requires places with lat, lon and name"
+                             " values")
+        return self.execute_command('GEOADD', name, *values)
+
+    def geodist(self, name, place1, place2, unit=None):
+        """
+        Return the distance between ``place1`` and ``place2`` members of the
+        ``name`` key.
+        The units must be one of the following : m, km mi, ft. By default
+        meters are used.
+        """
+        pieces = [name, place1, place2]
+        if unit and unit not in ('m', 'km', 'mi', 'ft'):
+            raise RedisError("GEODIST invalid unit")
+        elif unit:
+            pieces.append(unit)
+        return self.execute_command('GEODIST', *pieces)
+
+    def geohash(self, name, *values):
+        """
+        Return the geo hash string for each item of ``values`` members of
+        the specified key identified by the ``name``argument.
+        """
+        return self.execute_command('GEOHASH', name, *values)
+
+    def geopos(self, name, *values):
+        """
+        Return the positions of each item of ``values`` as members of
+        the specified key identified by the ``name``argument. Each position
+        is represented by the pairs lat and lon.
+        """
+        return self.execute_command('GEOPOS', name, *values)
+
+    def georadius(self, name, longitude, latitude, radius, unit=None,
+                  withdist=False, withcoord=False, withhash=False, count=None,
+                  sort=None, store=None, store_dist=None):
+        """
+        Return the members of the specified key identified by the
+        ``name`` argument which are within the borders of the area specified
+        with the ``latitude`` and ``longitude`` location and the maximum
+        distance from the center specified by the ``radius`` value.
+
+        The units must be one of the following : m, km mi, ft. By default
+
+        ``withdist`` indicates to return the distances of each place.
+
+        ``withcoord`` indicates to return the latitude and longitude of
+        each place.
+
+        ``withhash`` indicates to return the geohash string of each place.
+
+        ``count`` indicates to return the number of elements up to N.
+
+        ``sort`` indicates to return the places in a sorted way, ASC for
+        nearest to fairest and DESC for fairest to nearest.
+
+        ``store`` indicates to save the places names in a sorted set named
+        with a specific key, each element of the destination sorted set is
+        populated with the score got from the original geo sorted set.
+
+        ``store_dist`` indicates to save the places names in a sorted set
+        named with a specific key, instead of ``store`` the sorted set
+        destination score is set with the distance.
+        """
+        return self._georadiusgeneric('GEORADIUS',
+                                      name, longitude, latitude, radius,
+                                      unit=unit, withdist=withdist,
+                                      withcoord=withcoord, withhash=withhash,
+                                      count=count, sort=sort, store=store,
+                                      store_dist=store_dist)
+
+    def georadiusbymember(self, name, member, radius, unit=None,
+                          withdist=False, withcoord=False, withhash=False,
+                          count=None, sort=None, store=None, store_dist=None):
+        """
+        This command is exactly like ``georadius`` with the sole difference
+        that instead of taking, as the center of the area to query, a longitude
+        and latitude value, it takes the name of a member already existing
+        inside the geospatial index represented by the sorted set.
+        """
+        return self._georadiusgeneric('GEORADIUSBYMEMBER',
+                                      name, member, radius, unit=unit,
+                                      withdist=withdist, withcoord=withcoord,
+                                      withhash=withhash, count=count,
+                                      sort=sort, store=store,
+                                      store_dist=store_dist)
+
+    def _georadiusgeneric(self, command, *args, **kwargs):
+        pieces = list(args)
+        if kwargs['unit'] and kwargs['unit'] not in ('m', 'km', 'mi', 'ft'):
+            raise RedisError("GEORADIUS invalid unit")
+        elif kwargs['unit']:
+            pieces.append(kwargs['unit'])
+        else:
+            pieces.append('m',)
+
+        for token in ('withdist', 'withcoord', 'withhash'):
+            if kwargs[token]:
+                pieces.append(Token(token.upper()))
+
+        if kwargs['count']:
+            pieces.extend([Token('COUNT'), kwargs['count']])
+
+        if kwargs['sort'] and kwargs['sort'] not in ('ASC', 'DESC'):
+            raise RedisError("GEORADIUS invalid sort")
+        elif kwargs['sort']:
+            pieces.append(Token(kwargs['sort']))
+
+        if kwargs['store'] and kwargs['store_dist']:
+            raise RedisError("GEORADIUS store and store_dist cant be set"
+                             " together")
+
+        if kwargs['store']:
+            pieces.extend([Token('STORE'), kwargs['store']])
+
+        if kwargs['store_dist']:
+            pieces.extend([Token('STOREDIST'), kwargs['store_dist']])
+
+        return self.execute_command(command, *pieces, **kwargs)
 
 
 class Redis(StrictRedis):
@@ -2316,8 +2558,8 @@ class PubSub(object):
     def execute_command(self, *args, **kwargs):
         "Execute a publish/subscribe command"
 
-        # NOTE: don't parse the response in this function. it could pull a
-        # legitmate message off the stack if the connection is already
+        # NOTE: don't parse the response in this function -- it could pull a
+        # legitimate message off the stack if the connection is already
         # subscribed to one or more channels
 
         if self.connection is None:
@@ -2349,6 +2591,10 @@ class PubSub(object):
     def parse_response(self, block=True, timeout=0):
         "Parse the response from a publish/subscribe command"
         connection = self.connection
+        if connection is None:
+            raise RuntimeError(
+                'pubsub connection not set: '
+                'did you forget to call subscribe() or psubscribe()?')
         if not block and not connection.can_read(timeout=timeout):
             return None
         return self._execute(connection, connection.read_response)
@@ -2499,7 +2745,7 @@ class PubSub(object):
 
         return message
 
-    def run_in_thread(self, sleep_time=0):
+    def run_in_thread(self, sleep_time=0, daemon=False):
         for channel, handler in iteritems(self.channels):
             if handler is None:
                 raise PubSubError("Channel: '%s' has no handler registered")
@@ -2507,14 +2753,15 @@ class PubSub(object):
             if handler is None:
                 raise PubSubError("Pattern: '%s' has no handler registered")
 
-        thread = PubSubWorkerThread(self, sleep_time)
+        thread = PubSubWorkerThread(self, sleep_time, daemon=daemon)
         thread.start()
         return thread
 
 
 class PubSubWorkerThread(threading.Thread):
-    def __init__(self, pubsub, sleep_time):
+    def __init__(self, pubsub, sleep_time, daemon=False):
         super(PubSubWorkerThread, self).__init__()
+        self.daemon = daemon
         self.pubsub = pubsub
         self.sleep_time = sleep_time
         self._running = False

@@ -7,4 +7,5 @@ dump.rdb
 _build
 vagrant/.vagrant
 .python-version
-.cache/
+.cache
+.eggs
