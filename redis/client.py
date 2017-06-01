@@ -255,6 +255,9 @@ def parse_config_get(response, **options):
 
 def parse_scan(response, **options):
     cursor, r = response
+    rm_namespace = options.get('rm_namespace')
+    if rm_namespace:
+        r = [rm_namespace(item) for item in r]
     return long(cursor), r
 
 
@@ -352,11 +355,18 @@ def parse_keys(response, **options):
     return response
 
 
-def namespace_args(add_namespace, args, kwargs):
-    for index in kwargs.get('keys_at', []):
+def parse_blpop_and_brpop(r, **options):
+    rm_namespace = options.get('rm_namespace')
+    if r and rm_namespace:
+        r[0] = rm_namespace(r[0])
+    return r and tuple(r) or None
+
+
+def namespace_args(add_namespace, args, keys_at):
+    args = list(args)
+    for index in keys_at:
         args[index] = add_namespace(args[index]) 
-    print(args)
-    return args
+    return tuple(args) 
 
 
 class StrictRedis(object):
@@ -399,7 +409,7 @@ class StrictRedis(object):
             'SAVE SELECT SHUTDOWN SLAVEOF WATCH UNWATCH',
             bool_ok
         ),
-        string_keys_to_dict('BLPOP BRPOP', lambda r: r and tuple(r) or None),
+        string_keys_to_dict('BLPOP BRPOP', parse_blpop_and_brpop),
         string_keys_to_dict(
             'SDIFF SINTER SMEMBERS SUNION',
             lambda r: r and set(r) or set()
@@ -1162,8 +1172,7 @@ class StrictRedis(object):
         if namespace is provided.
         """
         return self.execute_command('RANDOMKEY')
-        # TODO: RANDOM KEY DOES NOT RETURN A NAMEPSACED KEY.  What we can do is say to do a check in your
-        # rm_namespace function to see if the key contains the namespace and then we can do the iter stuff here.
+        # TODO: RANDOM KEY DOES NOT RETURN A NAMEPSACED KEY.  Make sure this is stated in the docs!
 
     def rename(self, src, dst):
         """
@@ -1310,7 +1319,8 @@ class StrictRedis(object):
             keys = list(keys)
         keys.append(timeout)
         return self.execute_command('BLPOP', *keys,
-                                    keys_at=range(1, len(keys)))
+                                    keys_at=range(1, len(keys)),
+                                    rm_namespace=self.rm_namespace)
 
     def brpop(self, keys, timeout=None):
         """
@@ -1331,7 +1341,8 @@ class StrictRedis(object):
             keys = list(keys)
         keys.append(timeout)
         return self.execute_command('BRPOP', *keys,
-                                    keys_at=range(1, len(keys)))
+                                    keys_at=range(1, len(keys)),
+                                    rm_namespace=self.rm_namespace)
 
     def brpoplpush(self, src, dst, timeout=0):
         """
@@ -1483,7 +1494,8 @@ class StrictRedis(object):
                 for g in get:
                     pieces.append(Token.get_token('GET'))
                     pieces.append(g)
-                    keys_at.append(len(pieces))
+                    if g != "#":
+                        keys_at.append(len(pieces))
         if desc:
             pieces.append(Token.get_token('DESC'))
         if alpha:
@@ -1504,7 +1516,6 @@ class StrictRedis(object):
         return self.execute_command('SORT', *pieces, **options)
 
     # SCAN COMMANDS
-    # TOOD: Make scan remove namespacing from the keys. Update docs for it.
     def scan(self, cursor=0, match=None, count=None):
         """
         Incrementally return lists of key names. Also return a cursor
@@ -1518,10 +1529,11 @@ class StrictRedis(object):
         keys_at = []
         if match is not None:
             pieces.extend([Token.get_token('MATCH'), match])
-            keys_at.append(len(pieces))
+            keys_at.extend(range(3, 1 + len(pieces)))
         if count is not None:
             pieces.extend([Token.get_token('COUNT'), count])
-        return self.execute_command('SCAN', *pieces, keys_at=keys_at)
+        return self.execute_command('SCAN', *pieces, keys_at=keys_at,
+                                    rm_namespace=self.rm_namespace)
 
     def scan_iter(self, match=None, count=None):
         """
@@ -1548,13 +1560,11 @@ class StrictRedis(object):
         ``count`` allows for hint the minimum number of returns
         """
         pieces = [name, cursor]
-        keys_at = [1]
         if match is not None:
             pieces.extend([Token.get_token('MATCH'), match])
-            keys_at.append(len(pieces))
         if count is not None:
             pieces.extend([Token.get_token('COUNT'), count])
-        return self.execute_command('SSCAN', *pieces, keys_at=keys_at)
+        return self.execute_command('SSCAN', *pieces, keys_at=[1])
 
     def sscan_iter(self, name, match=None, count=None):
         """
@@ -1582,13 +1592,11 @@ class StrictRedis(object):
         ``count`` allows for hint the minimum number of returns
         """
         pieces = [name, cursor]
-        keys_at = [1]
         if match is not None:
             pieces.extend([Token.get_token('MATCH'), match])
-            keys_at.append(len(pieces))
         if count is not None:
             pieces.extend([Token.get_token('COUNT'), count])
-        return self.execute_command('HSCAN', *pieces, keys_at=keys_at)
+        return self.execute_command('HSCAN', *pieces, keys_at=[1])
 
     def hscan_iter(self, name, match=None, count=None):
         """
@@ -1619,14 +1627,12 @@ class StrictRedis(object):
         ``score_cast_func`` a callable used to cast the score return value
         """
         pieces = [name, cursor]
-        keys_at=[1]
         if match is not None:
             pieces.extend([Token.get_token('MATCH'), match])
-            keys_at.append(len(pieces))
         if count is not None:
             pieces.extend([Token.get_token('COUNT'), count])
         options = {'score_cast_func': score_cast_func,
-                   'keys_at': keys_at}
+                   'keys_at': [1]}
         return self.execute_command('ZSCAN', *pieces, **options)
 
     def zscan_iter(self, name, match=None, count=None,
@@ -1994,11 +2000,11 @@ class StrictRedis(object):
         pieces = [command, dest, len(keys)]
         keys_at = [1]
         if isinstance(keys, dict):
-            keys_at.extend(range(3, 3 + len(keys)))
             keys, weights = iterkeys(keys), itervalues(keys)
         else:
             weights = None
         pieces.extend(keys)
+        keys_at.extend(range(3, len(pieces)))
         if weights:
             pieces.append(Token.get_token('WEIGHTS'))
             pieces.extend(weights)

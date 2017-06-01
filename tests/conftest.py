@@ -38,6 +38,17 @@ def skip_if_server_version_lt(min_version):
     return pytest.mark.skipif(check, reason="")
 
 
+def add_namespace(key):
+    if isinstance(key, str):
+        return '{}{}'.format(NAMESPACE, key)
+    else:
+        return u'{}{}'.format(NAMESPACE, key)
+
+
+def rm_namespace(key):
+    return key[len(NAMESPACE):]
+
+
 @pytest.fixture()
 def r(request, **kwargs):
     return _get_client(redis.Redis, request, **kwargs)
@@ -46,6 +57,18 @@ def r(request, **kwargs):
 @pytest.fixture()
 def sr(request, **kwargs):
     return _get_client(redis.StrictRedis, request, **kwargs)
+
+
+@pytest.fixture()
+def nr(request, **kwargs):
+    return _get_client(redis.Redis, request, add_namespace=add_namespace,
+                       rm_namespace=rm_namespace, **kwargs)
+
+
+@pytest.fixture()
+def nsr(request, **kwargs):
+    return _get_client(redis.StrictRedis, request, add_namespace=add_namespace,
+                       rm_namespace=rm_namespace, **kwargs)
 
 
 def _gen_cluster_mock_resp(r, response):
@@ -112,17 +135,3 @@ def mock_cluster_resp_slaves(request, **kwargs):
                 "slave 19efe5a631f3296fdf21a5441680f893e8cc96ec 0 "
                 "1447836789290 3 connected']")
     return _gen_cluster_mock_resp(r, response)
-
-
-def add_namespace(key):
-    return "{}{}".format(NAMESPACE, key)
-
-
-def rm_namespace(key):
-    return key[len(NAMESPACE):]
-
-
-@pytest.fixture()
-def nr(request, **kwargs):
-    return _get_client(redis.Redis, request, add_namespace=add_namespace,
-                       rm_namespace=rm_namespace, **kwargs)
