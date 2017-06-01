@@ -6,6 +6,7 @@ from distutils.version import StrictVersion
 
 
 _REDIS_VERSIONS = {}
+NAMESPACE = "namespace:"
 
 
 def get_version(**kwargs):
@@ -113,6 +114,15 @@ def mock_cluster_resp_slaves(request, **kwargs):
     return _gen_cluster_mock_resp(r, response)
 
 
+def add_namespace(key):
+    return "{}{}".format(NAMESPACE, key)
+
+
+def rm_namespace(key):
+    return key[len(NAMESPACE):]
+
+
 @pytest.fixture()
 def nr(request, **kwargs):
-    return _get_client(redis.Redis, request, namespace='namespace:', **kwargs)
+    return _get_client(redis.Redis, request, add_namespace=add_namespace,
+                       rm_namespace=rm_namespace, **kwargs)

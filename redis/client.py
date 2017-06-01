@@ -344,6 +344,8 @@ def parse_pubsub_numsub(response, **options):
 
 
 def parse_keys(response, **options):
+    # TODO: This will not work, because if it returns all keys, not just one with namespaces then we are in trouble.
+    # Perhaps the remove namespace first needs to check if the namespace exists.
     rm_namespace = options.get('rm_namespace')
     if rm_namespace:
         return [rm_namespace(key) for key in response]
@@ -355,10 +357,6 @@ def namespace_args(add_namespace, args, kwargs):
         args[index] = add_namespace(args[index]) 
     print(args)
     return args
-
-    if self.namespace:
-        return remove_namespace(self.namespace, key)
-    return key
 
 
 class StrictRedis(object):
@@ -579,7 +577,7 @@ class StrictRedis(object):
         "Set a custom Response Callback"
         self.response_callbacks[command] = callback
 
-    def pipeline(self, transaction=True, shard_hint=None, namespace=None):
+    def pipeline(self, transaction=True, shard_hint=None):
         """
         Return a new pipeline object that can queue multiple commands for
         later execution. ``transaction`` indicates whether all commands
@@ -592,7 +590,8 @@ class StrictRedis(object):
             self.response_callbacks,
             transaction,
             shard_hint,
-            namespace or self.namespace)
+            self.add_namespace,
+            self.rm_namespace)
 
     def transaction(self, func, *watches, **kwargs):
         """
@@ -681,17 +680,16 @@ class StrictRedis(object):
         subscribe to channels and listen for messages that get published to
         them.
         """
-        if 'add_namespace' not in kwargs and self.add_namespace:
-            kwargs['add_namespace'] = self.add_namespace
-        if 'rm_namespace' not in kwargs and self.rm_namespace:
-            kwargs['rm_namespace'] = self.rm_namespace
+        kwargs.setdefault('add_namespace', self.add_namespace)
+        kwargs.setdefault('rm_namespace', self.rm_namespace)
         return PubSub(self.connection_pool, **kwargs)
 
     # COMMAND EXECUTION AND PROTOCOL PARSING
     def execute_command(self, *args, **options):
         "Execute a command and return a parsed response"
+        keys_at = options.pop('keys_at', [])
         if self.add_namespace:
-            args = namespace_args(self.add_namespace, args, options)
+            args = namespace_args(self.add_namespace, args, keys_at)
         pool = self.connection_pool
         command_name = args[0]
         connection = pool.get_connection(command_name, **options)
@@ -939,7 +937,7 @@ class StrictRedis(object):
         store the result in ``dest``.
         """
         return self.execute_command('BITOP', operation, dest, *keys,
-                                    keys_at=xrange(2, 3 + len(keys)))
+                                    keys_at=range(2, 3 + len(keys)))
 
     def bitpos(self, key, bit, start=None, end=None):
         """
@@ -971,7 +969,7 @@ class StrictRedis(object):
     def delete(self, *names):
         "Delete one or more keys specified by ``names``"
         return self.execute_command('DEL', *names,
-                                    keys_at=xrange(1, 1 + len(names)))
+                                    keys_at=range(1, 1 + len(names)))
 
     def __delitem__(self, name):
         self.delete(name)
@@ -1078,7 +1076,7 @@ class StrictRedis(object):
         """
         args = list_or_args(keys, args)
         return self.execute_command('MGET', *args,
-                                    keys_at=xrange(1, 1 + len(args)))
+                                    keys_at=range(1, 1 + len(args)))
 
     def mset(self, *args, **kwargs):
         """
@@ -1093,7 +1091,7 @@ class StrictRedis(object):
         for pair in iteritems(kwargs):
             items.extend(pair)
         return self.execute_command('MSET', *items,
-                                    keys_at=xrange(1, len(items), 2))
+                                    keys_at=range(1, len(items), 2))
 
     def msetnx(self, *args, **kwargs):
         """
@@ -1110,7 +1108,7 @@ class StrictRedis(object):
         for pair in iteritems(kwargs):
             items.extend(pair)
         return self.execute_command('MSETNX', *items,
-                                    keys_at=xrange(1, len(items), 2))
+                                    keys_at=range(1, len(items), 2))
 
     def move(self, name, db):
         "Moves the key ``name`` to a different Redis database ``db``"
@@ -1312,7 +1310,7 @@ class StrictRedis(object):
             keys = list(keys)
         keys.append(timeout)
         return self.execute_command('BLPOP', *keys,
-                                    keys_at=xrange(1, len(keys)))
+                                    keys_at=range(1, len(keys)))
 
     def brpop(self, keys, timeout=None):
         """
@@ -1333,7 +1331,7 @@ class StrictRedis(object):
             keys = list(keys)
         keys.append(timeout)
         return self.execute_command('BRPOP', *keys,
-                                    keys_at=xrange(1, len(keys)))
+                                    keys_at=range(1, len(keys)))
 
     def brpoplpush(self, src, dst, timeout=0):
         """
@@ -1667,7 +1665,7 @@ class StrictRedis(object):
         "Return the difference of sets specified by ``keys``"
         args = list_or_args(keys, args)
         return self.execute_command('SDIFF', *args,
-                                    keys_at=xrange(1, 1 + len(args)))
+                                    keys_at=range(1, 1 + len(args)))
 
     def sdiffstore(self, dest, keys, *args):
         """
@@ -1676,13 +1674,13 @@ class StrictRedis(object):
         """
         args = list_or_args(keys, args)
         return self.execute_command('SDIFFSTORE', dest, *args,
-                                    keys_at=xrange(1, 2 + len(args)))
+                                    keys_at=range(1, 2 + len(args)))
 
     def sinter(self, keys, *args):
         "Return the intersection of sets specified by ``keys``"
         args = list_or_args(keys, args)
         return self.execute_command('SINTER', *args,
-                                    keys_at=xrange(1, 1 + len(args)))
+                                    keys_at=range(1, 1 + len(args)))
 
     def sinterstore(self, dest, keys, *args):
         """
@@ -1691,7 +1689,7 @@ class StrictRedis(object):
         """
         args = list_or_args(keys, args)
         return self.execute_command('SINTERSTORE', dest, *args,
-                                    keys_at=xrange(1, 2 + len(args)))
+                                    keys_at=range(1, 2 + len(args)))
 
     def sismember(self, name, value):
         "Return a boolean indicating if ``value`` is a member of set ``name``"
@@ -1728,7 +1726,7 @@ class StrictRedis(object):
         "Return the union of sets specified by ``keys``"
         args = list_or_args(keys, args)
         return self.execute_command('SUNION', *args,
-                                    keys_at=xrange(1, 1 + len(args)))
+                                    keys_at=range(1, 1 + len(args)))
 
     def sunionstore(self, dest, keys, *args):
         """
@@ -1737,7 +1735,7 @@ class StrictRedis(object):
         """
         args = list_or_args(keys, args)
         return self.execute_command('SUNIONSTORE', dest, *args,
-                                    keys_at=xrange(1, 2 + len(args)))
+                                    keys_at=range(1, 2 + len(args)))
 
     # SORTED SET COMMANDS
     def zadd(self, name, *args, **kwargs):
@@ -1996,11 +1994,11 @@ class StrictRedis(object):
         pieces = [command, dest, len(keys)]
         keys_at = [1]
         if isinstance(keys, dict):
+            keys_at.extend(range(3, 3 + len(keys)))
             keys, weights = iterkeys(keys), itervalues(keys)
         else:
             weights = None
         pieces.extend(keys)
-        keys_at.extend(range(3, 3 + len(keys)))
         if weights:
             pieces.append(Token.get_token('WEIGHTS'))
             pieces.extend(weights)
@@ -2020,12 +2018,12 @@ class StrictRedis(object):
         the set observed by the HyperLogLog at key(s).
         """
         return self.execute_command('PFCOUNT', *sources,
-                                    keys_at=xrange(1, 1 + len(sources)))
+                                    keys_at=range(1, 1 + len(sources)))
 
     def pfmerge(self, dest, *sources):
         "Merge N different HyperLogLogs into a single one."
         return self.execute_command('PFMERGE', dest, *sources,
-                                    keys_at=xrange(1, 2 + len(sources)))
+                                    keys_at=range(1, 2 + len(sources)))
 
     # HASH COMMANDS
     def hdel(self, name, *keys):
@@ -2123,7 +2121,7 @@ class StrictRedis(object):
         for each channel given in ``*args``
         """
         return self.execute_command('PUBSUB NUMSUB', *args,
-                                    keys_at=xrange(1, 1 + len(args)))
+                                    keys_at=range(1, 1 + len(args)))
 
     # TODO: Make a note about cluster not supporting namespacing until it is expanded out.
     def cluster(self, cluster_arg, *args):
@@ -2140,7 +2138,7 @@ class StrictRedis(object):
         function exists purely for Redis API completion.
         """
         return self.execute_command('EVAL', script, numkeys, *keys_and_args,
-                                    keys_at=xrange(3, 3 + int(numkeys)))
+                                    keys_at=range(3, 3 + int(numkeys)))
 
     def evalsha(self, sha, numkeys, *keys_and_args):
         """
@@ -2153,7 +2151,7 @@ class StrictRedis(object):
         function exists purely for Redis API completion.
         """
         return self.execute_command('EVALSHA', sha, numkeys, *keys_and_args,
-                                    keys_at=xrange(3, 3 + int(numkeys)))
+                                    keys_at=range(3, 3 + int(numkeys)))
 
     def script_exists(self, *args):
         """
@@ -2335,7 +2333,7 @@ class Redis(StrictRedis):
     )
 
 
-    def pipeline(self, transaction=True, shard_hint=None, namespace=None):
+    def pipeline(self, transaction=True, shard_hint=None):
         """
         Return a new pipeline object that can queue multiple commands for
         later execution. ``transaction`` indicates whether all commands
@@ -2348,7 +2346,8 @@ class Redis(StrictRedis):
             self.response_callbacks,
             transaction,
             shard_hint,
-            namespace or self.namespace)
+            self.add_namespace,
+            self.rm_namespace)
 
     def setex(self, name, value, time):
         """
@@ -2416,7 +2415,8 @@ class PubSub(object):
     UNSUBSCRIBE_MESSAGE_TYPES = ('unsubscribe', 'punsubscribe')
 
     def __init__(self, connection_pool, shard_hint=None,
-                 ignore_subscribe_messages=False, namespace=None):
+                 ignore_subscribe_messages=False, add_namespace=None,
+                 rm_namespace=None):
         if (add_namespace is not None and rm_namespace is None) or \
                 (rm_namespace is not None and add_namespace is None):
             raise RedisError("``add_namespace`` and ``rm_namespace`` must " \
@@ -2502,8 +2502,9 @@ class PubSub(object):
         # legitimate message off the stack if the connection is already
         # subscribed to one or more channels
 
+        keys_at = kwargs.pop('keys_at', [])
         if self.add_namespace:
-            args = namespace_args(self.add_namespace, args, kwargs)
+            args = namespace_args(self.add_namespace, args, keys_at)
 
         if self.connection is None:
             self.connection = self.connection_pool.get_connection(
@@ -2556,7 +2557,7 @@ class PubSub(object):
         new_patterns.update(dict.fromkeys(imap(self.encode, args)))
         for pattern, handler in iteritems(kwargs):
             new_patterns[self.encode(pattern)] = handler
-        keys_at = xrange(1, 1 + len(new_patterns))
+        keys_at = range(1, 1 + len(new_patterns))
         ret_val = self.execute_command('PSUBSCRIBE', *iterkeys(new_patterns),
                                        keys_at=keys_at)
         # update the patterns dict AFTER we send the command. we don't want to
@@ -2573,7 +2574,7 @@ class PubSub(object):
         if args:
             args = list_or_args(args[0], args[1:])
         return self.execute_command('PUNSUBSCRIBE', *args,
-                                    keys_at=xrange(1, 1 + len(args)))
+                                    keys_at=range(1, 1 + len(args)))
 
     def subscribe(self, *args, **kwargs):
         """
@@ -2589,7 +2590,7 @@ class PubSub(object):
         new_channels.update(dict.fromkeys(imap(self.encode, args)))
         for channel, handler in iteritems(kwargs):
             new_channels[self.encode(channel)] = handler
-        keys_at = xrange(1, 1 + len(new_channels))
+        keys_at = range(1, 1 + len(new_channels))
         ret_val = self.execute_command('SUBSCRIBE', *iterkeys(new_channels),
                                        keys_at=keys_at)
         # update the channels dict AFTER we send the command. we don't want to
@@ -2606,7 +2607,7 @@ class PubSub(object):
         keys_at = []
         if args:
             args = list_or_args(args[0], args[1:])
-            keys_at = xrange(1, 1 + len(args))
+            keys_at = range(1, 1 + len(args))
         return self.execute_command('UNSUBSCRIBE', *args, keys_at=keys_at)
 
     def listen(self):
@@ -2639,15 +2640,15 @@ class PubSub(object):
         if message_type == 'pmessage':
             message = {
                 'type': message_type,
-                'pattern': remove_namespace(response[1]),
-                'channel': remove_namespace(response[2]),
+                'pattern': self._rm_namespace(response[1]),
+                'channel': self._rm_namespace(response[2]),
                 'data': response[3]
             }
         else:
             message = {
                 'type': message_type,
                 'pattern': None,
-                'channel': remove_namespace(response[1]),
+                'channel': self._rm_namespace(response[1]),
                 'data': response[2]
             }
 
@@ -2659,7 +2660,7 @@ class PubSub(object):
             else:
                 subscribed_dict = self.channels
             try:
-                del subscribed_dict[remove_namespace(message['channel'])]
+                del subscribed_dict[self._rm_namespace(message['channel'])]
             except KeyError:
                 pass
 
@@ -2667,10 +2668,10 @@ class PubSub(object):
             # if there's a message handler, invoke it
             handler = None
             if message_type == 'pmessage':
-                pattern = remove_namespace(message['pattern'])
+                pattern = self._rm_namespace(message['pattern'])
                 handler = self.patterns.get(pattern, None)
             else:
-                channel = remove_namespace(message['channel'])
+                channel = self._rm_namespace(message['channel'])
                 handler = self.channels.get(channel, None)
             if handler:
                 handler(message)
@@ -2694,6 +2695,11 @@ class PubSub(object):
         thread = PubSubWorkerThread(self, sleep_time, daemon=daemon)
         thread.start()
         return thread
+
+    def _rm_namespace(self, key):
+        if self.rm_namespace:
+            return self.rm_namespace(key)
+        return key
 
 
 class PubSubWorkerThread(threading.Thread):
@@ -2747,6 +2753,13 @@ class BasePipeline(object):
 
     def __init__(self, connection_pool, response_callbacks, transaction,
                  shard_hint, add_namespace=None, rm_namespace=None):
+        if (add_namespace is not None and rm_namespace is None) or \
+                (rm_namespace is not None and add_namespace is None):
+            raise RedisError("``add_namespace`` and ``rm_namespace`` must " \
+                             "both be specified")
+        self.add_namespace = add_namespace
+        self.rm_namespace = rm_namespace
+
         self.connection_pool = connection_pool
         self.connection = None
         self.response_callbacks = response_callbacks
@@ -2807,8 +2820,9 @@ class BasePipeline(object):
         self.explicit_transaction = True
 
     def execute_command(self, *args, **kwargs):
+        keys_at = kwargs.pop('keys_at', [])
         if self.add_namespace:
-            args = namespace_args(self.add_namespace, args, kwargs)
+            args = namespace_args(self.add_namespace, args, keys_at)
 
         if (self.watching or args[0] == 'WATCH') and \
                 not self.explicit_transaction:
@@ -3022,7 +3036,7 @@ class BasePipeline(object):
         if self.explicit_transaction:
             raise RedisError('Cannot issue a WATCH after a MULTI')
         return self.execute_command('WATCH', *names,
-                                    keys_at=xrange(1, 1 + len(names)))
+                                    keys_at=range(1, 1 + len(names)))
 
     def unwatch(self):
         "Unwatches all previously specified keys"
