@@ -2613,6 +2613,7 @@ class PubSub(object):
         if args:
             args = list_or_args(args[0], args[1:])
             keys_at = range(1, 1 + len(args))
+
         return self.execute_command('UNSUBSCRIBE', *args, keys_at=keys_at)
 
     def listen(self):
