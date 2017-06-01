@@ -126,10 +126,10 @@ class TestRedisCommands(object):
         assert isinstance(slowlog, list)
         commands = [log['command'] for log in slowlog]
 
-        get_command = b(' ').join(
-            (b('GET'),
-            add_namespace(unicode_string.encode('utf-8')))
-        )
+        get_command = b(' ').join((
+            b('GET'),
+            add_namespace(unicode_string.encode('utf-8'))
+        ))
         assert get_command in commands
         assert b('SLOWLOG RESET') in commands
         # the order should be ['GET <uni string>', 'SLOWLOG RESET'],
@@ -149,8 +149,8 @@ class TestRedisCommands(object):
         slowlog = nr.slowlog_get(1)
         assert isinstance(slowlog, list)
         commands = [log['command'] for log in slowlog]
-        assert b('GET {}'.format(add_namespace('foo'))) not in commands
-        assert b('GET {}'.format(add_namespace('bar'))) in commands
+        assert b('GET {0}'.format(add_namespace('foo'))) not in commands
+        assert b('GET {0}'.format(add_namespace('bar'))) in commands
 
     def test_slowlog_length(self, nr, slowlog):
         nr.get('foo')

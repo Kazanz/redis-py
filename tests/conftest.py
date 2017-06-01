@@ -1,8 +1,11 @@
 import pytest
+import sys
 import redis
 from mock import Mock
 
 from distutils.version import StrictVersion
+
+from redis._compat import b
 
 
 _REDIS_VERSIONS = {}
@@ -40,9 +43,11 @@ def skip_if_server_version_lt(min_version):
 
 def add_namespace(key):
     if isinstance(key, str):
-        return '{}{}'.format(NAMESPACE, key)
-    else:
-        return u'{}{}'.format(NAMESPACE, key)
+        return '{0}{1}'.format(NAMESPACE, key)
+    elif sys.version_info[0] == 3 and isinstance(key, bytes):
+        return b''.join([b(NAMESPACE), key])
+    elif isinstance(key, unicode):
+        return u'{0}{1}'.format(NAMESPACE, key)
 
 
 def rm_namespace(key):
