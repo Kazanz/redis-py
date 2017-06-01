@@ -824,7 +824,6 @@ class StrictRedis(object):
         """
         return self.execute_command('SAVE')
 
-    # TODO: Look into this sentinal stuff.
     def sentinel(self, *args):
         "Redis Sentinel's SENTINEL command."
         warnings.warn(
