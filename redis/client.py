@@ -25,6 +25,7 @@ from redis.exceptions import (
 )
 
 SYM_EMPTY = b('')
+SENTINEL_CHANNEL = '__sentinel__:hello'
 
 
 def list_or_args(keys, args):
@@ -343,7 +344,19 @@ def parse_georadius_generic(response, **options):
 
 
 def parse_pubsub_numsub(response, **options):
-    return list(zip(response[0::2], response[1::2]))
+    channels = response[0::2]
+    rm_namespace = options.get('rm_namespace')
+    if rm_namespace:
+        channels = [rm_namespace(c) if c != SENTINEL_CHANNEL else c
+                    for c in channels]
+    return list(zip(channels, response[1::2]))
+
+
+def parse_pubsub_channels(response, **options):
+    rm_namespace = options.get('rm_namespace')
+    if rm_namespace:
+        response = [rm_namespace(channel) for channel in response]
+    return response
 
 
 def parse_keys(response, **options):
@@ -479,6 +492,7 @@ class StrictRedis(object):
             'GEORADIUS': parse_georadius_generic,
             'GEORADIUSBYMEMBER': parse_georadius_generic,
             'PUBSUB NUMSUB': parse_pubsub_numsub,
+            'PUBSUB CHANNELS': parse_pubsub_channels,
         }
     )
 
@@ -2112,7 +2126,8 @@ class StrictRedis(object):
         """
         Return a list of channels that have at least one subscriber
         """
-        return self.execute_command('PUBSUB CHANNELS', pattern, keys_at=[1])
+        return self.execute_command('PUBSUB CHANNELS', pattern, keys_at=[1],
+                                    rm_namespace=self.rm_namespace)
 
     def pubsub_numpat(self):
         """
@@ -2126,7 +2141,8 @@ class StrictRedis(object):
         for each channel given in ``*args``
         """
         return self.execute_command('PUBSUB NUMSUB', *args,
-                                    keys_at=range(1, 1 + len(args)))
+                                    keys_at=range(1, 1 + len(args)),
+                                    rm_namespace=self.rm_namespace)
 
     # TODO: Make a note about cluster not supporting namespacing until it is expanded out.
     def cluster(self, cluster_arg, *args):
@@ -2666,7 +2682,7 @@ class PubSub(object):
             else:
                 subscribed_dict = self.channels
             try:
-                del subscribed_dict[self._rm_namespace(message['channel'])]
+                del subscribed_dict[message['channel']]
             except KeyError:
                 pass
 
@@ -2674,10 +2690,10 @@ class PubSub(object):
             # if there's a message handler, invoke it
             handler = None
             if message_type == 'pmessage':
-                pattern = self._rm_namespace(message['pattern'])
+                pattern = message['pattern']
                 handler = self.patterns.get(pattern, None)
             else:
-                channel = self._rm_namespace(message['channel'])
+                channel = message['channel']
                 handler = self.channels.get(channel, None)
             if handler:
                 handler(message)

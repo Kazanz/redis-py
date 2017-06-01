@@ -6,7 +6,7 @@ import redis
 from redis.exceptions import ConnectionError
 from redis._compat import basestring, u, unichr, b
 
-from .conftest import r as _redis_client
+from .conftest import nr as _redis_client
 from .conftest import skip_if_server_version_lt
 
 
@@ -315,7 +315,7 @@ class TestPubSubAutoDecoding(object):
         self.message = message
 
     @pytest.fixture()
-    def r(self, request):
+    def nr(self, request):
         return _redis_client(request=request, decode_responses=True)
 
     def test_channel_subscribe_unsubscribe(self, nr):
@@ -390,15 +390,6 @@ class TestPubSubAutoDecoding(object):
         assert self.message == self.make_message('pmessage', self.channel,
                                                  new_data,
                                                  pattern=self.pattern)
-
-
-class TestPubSubRedisDown(object):
-
-    def test_channel_subscribe(self, nr):
-        r = redis.Redis(host='localhost', port=6390)
-        p = nr.pubsub()
-        with pytest.raises(ConnectionError):
-            p.subscribe('foo')
 
 
 class TestPubSubPubSubSubcommands(object):
