@@ -360,8 +360,6 @@ def parse_pubsub_channels(response, **options):
 
 
 def parse_keys(response, **options):
-    # TODO: This will not work, because if it returns all keys, not just one with namespaces then we are in trouble.
-    # Perhaps the remove namespace first needs to check if the namespace exists.
     rm_namespace = options.get('rm_namespace')
     if rm_namespace:
         return [rm_namespace(key) for key in response]
@@ -896,7 +894,6 @@ class StrictRedis(object):
                                         Token.get_token('ONE'))
         return self.execute_command('SLAVEOF', host, port)
 
-    # TODO: Make a note about slowlog. which will identify a command using nsmespace keys.  Do we want to clean this.  Probably not.
     def slowlog_get(self, num=None):
         """
         Get the entries from the slowlog. If ``num`` is specified, get the
@@ -1085,9 +1082,6 @@ class StrictRedis(object):
         """
         return self.execute_command('INCRBYFLOAT', name, amount, keys_at=[1])
 
-    # TODO: Update the docs on how this will work, and update how this handles removing the namespaces from the returned values.
-    # Ideally you are searching for keys withing hte current namespace.  So we are going to namespace everything and
-    # remove the namespace from the responses.
     def keys(self, pattern='*'):
         "Returns a list of keys matching ``pattern``"
         return self.execute_command('KEYS', pattern, keys_at=[1],
@@ -1179,13 +1173,12 @@ class StrictRedis(object):
         "Returns the number of milliseconds until the key ``name`` will expire"
         return self.execute_command('PTTL', name, keys_at=[1])
 
-    def randomkey(self, iterations=1000):
+    def randomkey(self):
         """
         Returns the name of a random key.  Will return only namespaced keys
         if namespace is provided.
         """
         return self.execute_command('RANDOMKEY')
-        # TODO: RANDOM KEY DOES NOT RETURN A NAMEPSACED KEY.  Make sure this is stated in the docs!
 
     def rename(self, src, dst):
         """
@@ -1312,7 +1305,6 @@ class StrictRedis(object):
             DeprecationWarning('Call UNWATCH from a Pipeline object'))
 
     # LIST COMMANDS
-    # TODO: MAKE SURE TO ADD A WARNING TO THE DOCUMENTATION ABOUT keys within lists of current databases not being namespaced!
     def blpop(self, keys, timeout=None):
         """
         LPOP a value off of the first non-empty list
@@ -1669,9 +1661,6 @@ class StrictRedis(object):
                 yield item
 
     # SET COMMANDS
-    # TODO: Make sure to add the same warning about Sets as with LISTS if they are storing keys.
-    # Perhaps bring up in the PR, that we could add a kwarg to these params to remove namespaces from the return values
-    # if the user explicitly wants to.
     def sadd(self, name, *values):
         "Add ``value(s)`` to set ``name``"
         return self.execute_command('SADD', name, *values, keys_at=[1])
@@ -2144,11 +2133,9 @@ class StrictRedis(object):
                                     keys_at=range(1, 1 + len(args)),
                                     rm_namespace=self.rm_namespace)
 
-    # TODO: Make a note about cluster not supporting namespacing until it is expanded out.
     def cluster(self, cluster_arg, *args):
         return self.execute_command('CLUSTER %s' % cluster_arg.upper(), *args)
 
-    # TODO: in the PR mention this as an example of custom keys_at calculations. Also _zaggeraget maybe
     def eval(self, script, numkeys, *keys_and_args):
         """
         Execute the Lua ``script``, specifying the ``numkeys`` the script

@@ -677,10 +677,28 @@ that return Python iterators for convenience: `scan_iter`, `hscan_iter`,
 Namespacing
 ^^^^^^^^^^^
 
+Namespacing keys is possible with the `StrictRedis`, `Redis` `PubSub`,
+`StrictPipeline` and `Pipeline` objects using `add_namespace` and
+`rm_namespace` kwargs during instantiation.  `add_namespace` should be a
+function that takes a key argument and returns your namespaced key.
+`rm_namespace` function should take a namespace key argument and return
+your original key without the namespace. This allows you to create your own
+namespacing logic.
+
 .. code-block:: pycon
 
     >>> import redis
-    >>> r = redis.StrictRedis(host='localhost', port=6379, db=0, namespace="ns:")
+    >>>
+    >>> def add_namespace(key):
+    ...     return 'ns:{}'.format(key)
+    ...
+    >>> def rm_namespace(key):
+    ...     return key[3:]
+    ...
+    >>> r = redis.StrictRedis(host='localhost', port=6379, db=0,
+    ...                       add_namespace=add_namespace,
+    ...                       rm_namespace=rm_namespace)
+    ...
     >>> # Sets key "ns:foo".
     >>> r.set('foo', 'bar')
     True
@@ -688,32 +706,34 @@ Namespacing
     >>> r.get('foo')
     'bar'
 
-Important: Any application code that accesses data structures that store
-key names will not return keys with the namespace stripped.  For example:
+Care must be taken when adding namespacing support to existing systems. The
+following caveats need be considered:
+
+- The `keys` command will namespace any provided pattern and default to the
+  return value of `add_namespace('*')`.
+
+- There is no way to know if your existing data structures contain
+  non-namspaced keys. Therefore, any existing data structures that
+  may store historical keys in your current system should be carefully
+  considered before adding namespace support.
+
+- The `slowlog_get` and `randomkey` commands will returned keys
+  *without* removing the namespace because there is no way to know which
+  returned keys are namespaced.
+
+- Cluster commands, using `r.cluster(...)`, *do not* currently support
+  namespacing.
+
+You can make a function run the `rm_namespace` function on its response by
+overriding the method and passing the `rm_namespace` kwarg to the
+`execute_command` function.
 
 .. code-block:: pycon
 
-    r = redis.StrictRedis(namespace="ns:", ...)
-    for key in r.blpop():
-        data = r.get(key)
-        # do something with data
-        # if data is a key it will not have the namespace removed
-
-    ### OR
-
-    for key in r.keys('myapp:*'):
-       data = r.get(key)
-
-
-To strip the namespace from the keys manually you can use the `remove_namespace`
-function.
-
-.. code-block:: pycon
-
-    r = redis.StrictRedis(namespace="ns:", ...)
-    for key in r.keys('myapp:*'):
-       data = r.remove_namespace(r.get(key))
-
+    >>> class MyRedis(StrictRedis):
+    ...     def randomkey(self):
+    ...         return self.execute_command('RANDOMKEY',
+    ...                                     rm_namespace=self.rm_namespace)
 
 Author
 ^^^^^^
