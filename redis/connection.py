@@ -409,14 +409,12 @@ class Connection(object):
                  socket_keepalive=False, socket_keepalive_options=None,
                  retry_on_timeout=False, encoding='utf-8',
                  encoding_errors='strict', decode_responses=False,
-                 parser_class=DefaultParser, socket_read_size=65536,
-                 namespace=None):
+                 parser_class=DefaultParser, socket_read_size=65536):
         self.pid = os.getpid()
         self.host = host
         self.port = int(port)
         self.db = db
         self.password = password
-        self.namespace = namespace
         self.socket_timeout = socket_timeout
         self.socket_connect_timeout = socket_connect_timeout or socket_timeout
         self.socket_keepalive = socket_keepalive

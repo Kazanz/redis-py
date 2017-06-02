@@ -1532,6 +1532,8 @@ class StrictRedis(object):
         """
         pieces = [cursor]
         keys_at = []
+        if match is None and self.add_namespace:
+            match = '*'
         if match is not None:
             pieces.extend([Token.get_token('MATCH'), match])
             keys_at.extend(range(3, 1 + len(pieces)))
