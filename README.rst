@@ -710,7 +710,8 @@ Care must be taken when adding namespacing support to existing systems. The
 following caveats need be considered:
 
 - The `keys` command will namespace any provided pattern and default to the
-  return value of `add_namespace('*')`.
+  return value of `add_namespace('*')`.  The `scan` command's `MATCH` arg
+  will default to `add_namespace('*')`.
 
 - There is no way to know if your existing data structures contain
   non-namspaced keys. Therefore, any existing data structures that
@@ -723,17 +724,6 @@ following caveats need be considered:
 
 - Cluster commands, using `r.cluster(...)`, *do not* currently support
   namespacing.
-
-You can make a function run the `rm_namespace` function on its response by
-overriding the method and passing the `rm_namespace` kwarg to the
-`execute_command` function.
-
-.. code-block:: pycon
-
-    >>> class MyRedis(StrictRedis):
-    ...     def randomkey(self):
-    ...         return self.execute_command('RANDOMKEY',
-    ...                                     rm_namespace=self.rm_namespace)
 
 Author
 ^^^^^^
